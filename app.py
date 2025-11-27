@@ -1,7 +1,7 @@
 """
 Best Buy Deal Finder - Web App
 ==============================
-A Streamlit web app to find laptop upgrade deals from Best Buy Canada.
+A Streamlit web app to find laptop upgrade deals from Best Buy (US & Canada).
 Upload a saved HTML file and compare against your current specs.
 """
 
@@ -101,53 +101,142 @@ def extract_specs(name):
     return specs
 
 
-def extract_products_from_html(content):
-    """Extract product data from Best Buy Canada's saved HTML page."""
+def extract_products_from_html(content, country="CA"):
+    """Extract product data from Best Buy saved HTML page (US or Canada)."""
+
+    # Try Canada format first (window.__INITIAL_STATE__)
     match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', content, re.DOTALL)
-    if not match:
-        return None, "Could not find product data in HTML file. Make sure you saved a Best Buy Canada product listing page."
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            products = []
 
-    try:
-        data = json.loads(match.group(1))
-    except json.JSONDecodeError as e:
-        return None, f"Failed to parse product data: {e}"
+            if 'productList' in data and 'data' in data['productList']:
+                p_data = data['productList']['data']
+                if p_data:
+                    products = p_data.get('products', p_data.get('results', []))
 
+            if not products and 'search' in data:
+                search = data['search']
+                if 'searchResult' in search:
+                    sr = search['searchResult']
+                    products = sr.get('results', sr.get('products', []))
+                elif 'results' in search:
+                    products = search['results']
+
+            if products:
+                return products, None, "CA"
+        except json.JSONDecodeError:
+            pass
+
+    # Try US format (GraphQL/Apollo style embedded in HTML)
+    # US Best Buy embeds product data differently - we need to extract it from the page
+    products = extract_us_products(content)
+    if products:
+        return products, None, "US"
+
+    return None, "Could not find product data. Make sure you saved a Best Buy product listing page (US or Canada).", None
+
+
+def extract_us_products(content):
+    """Extract products from US Best Buy HTML format."""
     products = []
 
-    if 'productList' in data and 'data' in data['productList']:
-        p_data = data['productList']['data']
-        if p_data:
-            products = p_data.get('products', p_data.get('results', []))
+    # US format has product names in "name":{"__typename":"ProductName","short":"..."}
+    # and prices in "customerPrice":XXX.XX,"skuId":"..."
 
-    if not products and 'search' in data:
-        search = data['search']
-        if 'searchResult' in search:
-            sr = search['searchResult']
-            products = sr.get('results', sr.get('products', []))
-        elif 'results' in search:
-            products = search['results']
+    # Build a map of SKU -> price first
+    price_pattern = r'"customerPrice":([\d.]+),"skuId":"(\d+)"'
+    sku_prices = {}
+    for match in re.finditer(price_pattern, content):
+        price, sku = match.groups()
+        if sku not in sku_prices:
+            sku_prices[sku] = float(price)
 
-    if not products:
-        return None, "No products found in the HTML file. Make sure you saved a page with laptop listings."
+    # Find all product names
+    name_pattern = r'"name":\{"__typename":"ProductName","short":"([^"]+)"'
+    name_matches = list(re.finditer(name_pattern, content))
 
-    return products, None
+    # Extract products by finding name blocks and nearby SKUs
+    seen_skus = set()
+
+    for name_match in name_matches:
+        short_name = name_match.group(1)
+
+        # Clean up escaped characters
+        short_name = short_name.replace('\\"', '"').replace('\\/', '/')
+
+        # Look for SKU near this name (within ~3000 chars before)
+        start_pos = max(0, name_match.start() - 3000)
+        context = content[start_pos:name_match.end() + 500]
+
+        # Try to find SKU in context
+        sku_match = re.search(r'"sku":"(\d+)"', context)
+        if not sku_match:
+            sku_match = re.search(r'"skuId":"(\d+)"', context)
+
+        if sku_match:
+            sku = sku_match.group(1)
+
+            # Skip if we've already processed this SKU
+            if sku in seen_skus:
+                continue
+            seen_skus.add(sku)
+
+            price = sku_prices.get(sku, 0)
+
+            # Skip products without prices (not fully loaded)
+            if price == 0:
+                continue
+
+            # Check for savings
+            saving = 0
+            regular_match = re.search(rf'"skuId":"{sku}"[^}}]*"regularPrice":([\d.]+)', content)
+            if regular_match:
+                regular = float(regular_match.group(1))
+                if regular > price:
+                    saving = regular - price
+
+            products.append({
+                'name': short_name,
+                'sku': sku,
+                'skuId': sku,
+                'price': price,
+                'customerPrice': price,
+                'saving': saving,
+                'seoUrl': f'/site/{sku}.p?skuId={sku}',
+                'country': 'US'
+            })
+
+    return products if products else None
 
 
-def analyze_deals(products, current_specs, show_all=False):
+def analyze_deals(products, current_specs, show_all=False, country="CA"):
     """Analyze products and compare against current specs."""
-    base_url = "https://www.bestbuy.ca"
+    if country == "US":
+        base_url = "https://www.bestbuy.com"
+    else:
+        base_url = "https://www.bestbuy.ca"
+
     deals = []
 
     for p in products:
         name = p.get('name', '')
-        price = p.get('priceWithoutEhf', 0)
+
+        # Handle different price field names between US and Canada
+        price = p.get('priceWithoutEhf') or p.get('customerPrice') or p.get('price', 0)
+        if isinstance(price, dict):
+            price = price.get('customerPrice', 0)
+
         saving = p.get('saving', 0)
-        sku = p.get('sku', '')
+        sku = p.get('sku') or p.get('skuId', '')
 
         specs = extract_specs(name)
 
         seo_url = p.get('seoUrl', '')
-        if seo_url:
+        if country == "US":
+            url = f"{base_url}/site/{sku}.p?skuId={sku}"
+        elif seo_url:
             url = seo_url if seo_url.startswith('http') else base_url + seo_url
         else:
             url = f"{base_url}/en-ca/product/{sku}"
@@ -397,13 +486,15 @@ def generate_santa_wishlist(deals, current_specs, top_n=3):
 
 # Main App
 st.title("💻 Best Buy Deal Finder")
-st.markdown("*Find laptop upgrade deals from Best Buy Canada*")
+st.markdown("*Find laptop upgrade deals from Best Buy (US & Canada)*")
 
 # Sidebar - Instructions
 with st.sidebar:
     st.header("📋 How to Use")
     st.markdown("""
-    **Step 1:** Go to [Best Buy Canada Laptops](https://www.bestbuy.ca/en-ca/category/laptops-macbooks/20352)
+    **Step 1:** Go to Best Buy Laptops:
+    - 🇨🇦 [Best Buy Canada](https://www.bestbuy.ca/en-ca/category/laptops-macbooks/20352)
+    - 🇺🇸 [Best Buy US](https://www.bestbuy.com/site/laptop-computers/all-laptops/pcmcat138500050001.c)
 
     **Step 2:** Use filters to refine your search
 
@@ -418,6 +509,8 @@ with st.sidebar:
     **Step 5:** Upload the saved HTML file here
 
     **Step 6:** Enter your current specs and click Analyze!
+
+    *The app auto-detects US vs Canada format!*
     """)
 
     st.markdown("---")
@@ -431,7 +524,7 @@ with col1:
     uploaded_file = st.file_uploader(
         "Choose the saved HTML file",
         type=['html', 'htm'],
-        help="Upload the HTML file you saved from Best Buy Canada"
+        help="Upload the HTML file you saved from Best Buy (US or Canada)"
     )
 
 with col2:
@@ -461,7 +554,7 @@ if uploaded_file is not None:
                 uploaded_file.seek(0)
                 content = uploaded_file.read().decode('latin-1')
 
-            products, error = extract_products_from_html(content)
+            products, error, country = extract_products_from_html(content)
 
             if error:
                 st.error(error)
@@ -473,20 +566,24 @@ if uploaded_file is not None:
                     'storage': current_storage
                 }
 
-                deals = analyze_deals(products, current_specs, show_all)
+                deals = analyze_deals(products, current_specs, show_all, country)
 
                 # Store in session state
                 st.session_state['deals'] = deals
                 st.session_state['current_specs'] = current_specs
                 st.session_state['analyzed'] = True
                 st.session_state['product_count'] = len(products)
+                st.session_state['country'] = country
 
     # Display results if we have analyzed data
     if st.session_state['analyzed'] and st.session_state['deals'] is not None:
         deals = st.session_state['deals']
         current_specs = st.session_state['current_specs']
+        country = st.session_state.get('country', 'CA')
 
-        st.success(f"Found {st.session_state.get('product_count', 0)} products!")
+        country_flag = "🇺🇸" if country == "US" else "🇨🇦"
+        country_name = "US" if country == "US" else "Canada"
+        st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
 
         if not deals:
             st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
