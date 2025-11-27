@@ -520,6 +520,128 @@ def analyze_deals(products, current_specs, show_all=False, country="CA", filter_
     return deals, skipped_incomplete
 
 
+def analyze_deals_with_filters(products, current_specs, min_specs, show_all=False, country="CA"):
+    """
+    Analyze products with separate current specs (for comparison) and min specs (for filtering).
+
+    - current_specs: User's current computer - used for upgrade comparison notes
+    - min_specs: Minimum requirements - used to filter out laptops that don't meet criteria
+    """
+    if country == "US":
+        base_url = "https://www.bestbuy.com"
+    else:
+        base_url = "https://www.bestbuy.ca"
+
+    deals = []
+    skipped = 0
+
+    # Resolution ranking for comparisons
+    resolution_rank = {"HD": 1, "HD+": 2, "FHD": 3, "FHD+": 4, "QHD": 5, "WQXGA": 5, "QHD+": 6, "4K UHD": 7, "OLED": 4, "Unknown": 0}
+
+    for p in products:
+        name = p.get('name', '')
+
+        # Handle different price field names
+        price = p.get('priceWithoutEhf') or p.get('customerPrice') or p.get('price', 0)
+        if isinstance(price, dict):
+            price = price.get('customerPrice', 0)
+
+        saving = p.get('saving', 0)
+        sku = p.get('sku') or p.get('skuId', '')
+
+        specs = extract_specs(name)
+        condition = extract_condition(name)
+
+        # === FILTERING against minimum requirements ===
+        # Skip if missing RAM (can't evaluate properly)
+        if specs['ram'] == 0:
+            skipped += 1
+            continue
+
+        # Skip if below minimum requirements (unless show_all is checked)
+        if not show_all:
+            if specs['ram'] < min_specs.get('ram', 0):
+                skipped += 1
+                continue
+            if specs['storage'] > 0 and specs['storage'] < min_specs.get('storage', 0):
+                skipped += 1
+                continue
+            if specs['cpu_gen'] > 0 and specs['cpu_gen'] < min_specs.get('cpu_gen', 0):
+                skipped += 1
+                continue
+            if specs['screen_size'] > 0 and specs['screen_size'] < min_specs.get('screen_size', 0):
+                skipped += 1
+                continue
+
+        # Build URL
+        seo_url = p.get('seoUrl', '')
+        if seo_url and seo_url.startswith('http'):
+            url = seo_url
+        elif country == "US":
+            url = f"{base_url}/site/{sku}.p?skuId={sku}" if sku else seo_url
+        elif seo_url:
+            url = base_url + seo_url
+        else:
+            url = f"{base_url}/en-ca/product/{sku}" if sku else "#"
+
+        # === COMPARISON against current computer ===
+        better_cpu = specs['cpu_gen'] > current_specs.get('cpu_gen', 0) if specs['cpu_gen'] > 0 else False
+        better_ram = specs['ram'] > current_specs.get('ram', 0)
+        better_storage = specs['storage'] >= current_specs.get('storage', 0) if specs['storage'] > 0 else False
+        bigger_screen = specs['screen_size'] > current_specs.get('screen_size', 0) if specs['screen_size'] > 0 else False
+
+        current_res_rank = resolution_rank.get(current_specs.get('resolution', 'FHD'), 3)
+        product_res_rank = resolution_rank.get(specs['resolution'], 0)
+        better_resolution = product_res_rank > current_res_rank if product_res_rank > 0 else False
+
+        # Build upgrade notes (comparing to current computer)
+        notes = []
+        if better_cpu:
+            notes.append(f"CPU+ (Gen {specs['cpu_gen']})")
+        if better_ram:
+            notes.append(f"RAM+ ({specs['ram']}GB)")
+        if better_storage:
+            notes.append(f"Storage+ ({specs['storage']}GB)")
+        if bigger_screen:
+            notes.append(f"Screen+ ({specs['screen_size']}\")")
+        if better_resolution:
+            notes.append(f"Res+ ({specs['resolution']})")
+
+        # Score based on upgrades vs current computer
+        score = 0
+        if better_cpu:
+            score += 2
+        if better_ram:
+            score += 2
+        if better_storage:
+            score += 1
+        if bigger_screen:
+            score += 1
+        if better_resolution:
+            score += 1
+        if saving > 0:
+            score += 1
+
+        deal = {
+            'name': name,
+            'price': price,
+            'saving': saving,
+            'specs': specs,
+            'condition': condition,
+            'notes': notes,
+            'score': score,
+            'url': url,
+            'sku': sku,
+            'source': p.get('source', ''),
+            'is_upgrade': better_cpu or better_ram or better_storage
+        }
+
+        deals.append(deal)
+
+    deals.sort(key=lambda x: (-x['score'], x['price']))
+    return deals, skipped
+
+
 def generate_santa_wishlist(deals, current_specs, top_n=3):
     """Generate the festive Christmas wishlist HTML."""
     top_deals = deals[:top_n]
@@ -803,52 +925,74 @@ with tab2:
     st.header("🔍 Live Search (US)")
     st.info("🛒 Searches Google Shopping for laptop deals across multiple US retailers (Best Buy, Amazon, Walmart, etc.)")
 
-    search_col1, search_col2 = st.columns([2, 1])
+    # Search query input
+    search_query = st.text_input("Search for laptops", value="gaming laptop", placeholder="e.g., gaming laptop RTX 4060")
 
-    with search_col1:
-        search_query = st.text_input("Search for laptops", value="gaming laptop", placeholder="e.g., gaming laptop RTX 4060")
-        search_button = st.button("🔍 Search Laptops", type="primary")
+    # Two columns: Current specs (for comparison) and Minimum requirements (for search)
+    col_current, col_minimum = st.columns(2)
 
-    with search_col2:
-        st.subheader("⚙️ Minimum Specs Wanted")
-        search_ram = st.number_input("Min RAM (GB)", min_value=8, max_value=128, value=16, key="search_ram",
-                                     help="Minimum RAM - search will include this in query if 16GB+")
-        search_storage = st.number_input("Min Storage (GB)", min_value=256, max_value=8000, value=512, key="search_storage",
-                                         help="Minimum SSD storage")
-        search_cpu_gen = st.number_input("Min CPU Generation", min_value=1, max_value=20, value=10, key="search_cpu",
-                                         help="Used to filter results after search")
-        search_screen_size = st.number_input("Min Screen Size (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1, key="search_screen")
-        search_resolution = st.selectbox("Min Resolution",
-                                         options=["HD", "HD+", "FHD", "FHD+", "QHD", "QHD+", "4K UHD"],
-                                         index=2, key="search_res",
-                                         help="QHD/4K will be added to search query")
-        search_show_all = st.checkbox("Show all results (skip spec filtering)", key="search_show_all")
+    with col_current:
+        st.subheader("💻 Your Current Computer")
+        st.caption("Used to show upgrade comparisons (e.g., 'RAM+ 32GB')")
+        current_ram_search = st.number_input("Your RAM (GB)", min_value=4, max_value=128, value=16, key="current_ram_search")
+        current_storage_search = st.number_input("Your Storage (GB)", min_value=128, max_value=8000, value=512, key="current_storage_search")
+        current_cpu_search = st.number_input("Your CPU Gen", min_value=1, max_value=20, value=10, key="current_cpu_search",
+                                              help="e.g., 10 for i7-10750H")
+        current_screen_search = st.number_input("Your Screen (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1, key="current_screen_search")
+
+    with col_minimum:
+        st.subheader("🎯 Minimum Requirements")
+        st.caption("Filters search results & builds query")
+        min_ram = st.number_input("Min RAM (GB)", min_value=8, max_value=128, value=16, key="min_ram",
+                                  help="Laptops below this will be filtered out")
+        min_storage = st.number_input("Min Storage (GB)", min_value=256, max_value=8000, value=512, key="min_storage")
+        min_cpu = st.number_input("Min CPU Gen", min_value=1, max_value=20, value=11, key="min_cpu")
+        min_screen = st.number_input("Min Screen (inches)", min_value=10.0, max_value=20.0, value=15.0, step=0.1, key="min_screen")
+        min_resolution = st.selectbox("Min Resolution",
+                                      options=["HD", "HD+", "FHD", "FHD+", "QHD", "QHD+", "4K UHD"],
+                                      index=2, key="min_res")
+
+    search_show_all = st.checkbox("Show all results (skip minimum filtering)", key="search_show_all")
+    search_button = st.button("🔍 Search Laptops", type="primary")
 
     # Handle live search
     if search_button:
-        # Build specs dict for query enhancement
-        search_specs = {
-            'cpu_gen': search_cpu_gen,
-            'ram': search_ram,
-            'storage': search_storage,
-            'screen_size': search_screen_size,
-            'resolution': search_resolution
+        # Current specs (for comparison/upgrade notes)
+        current_specs_search = {
+            'cpu_gen': current_cpu_search,
+            'ram': current_ram_search,
+            'storage': current_storage_search,
+            'screen_size': current_screen_search,
+            'resolution': 'FHD'  # Default for comparison
+        }
+
+        # Minimum specs (for query building and filtering)
+        min_specs = {
+            'cpu_gen': min_cpu,
+            'ram': min_ram,
+            'storage': min_storage,
+            'screen_size': min_screen,
+            'resolution': min_resolution
         }
 
         # Show the enhanced query being used
-        enhanced_query = build_search_query(search_query, search_specs)
+        enhanced_query = build_search_query(search_query, min_specs)
         st.info(f"🔎 Searching: **{enhanced_query}**")
 
         with st.spinner(f"Searching..."):
-            products, error = search_google_shopping(search_query, specs=search_specs)
+            products, error = search_google_shopping(search_query, specs=min_specs)
 
             if error:
                 st.error(error)
             elif products:
-                search_deals, skipped = analyze_deals(products, search_specs, search_show_all, "US")
+                # Use current_specs for comparison notes, min_specs for filtering
+                search_deals, skipped = analyze_deals_with_filters(
+                    products, current_specs_search, min_specs, search_show_all, "US"
+                )
 
                 st.session_state['search_deals'] = search_deals
-                st.session_state['search_specs'] = search_specs
+                st.session_state['search_current_specs'] = current_specs_search
+                st.session_state['search_min_specs'] = min_specs
                 st.session_state['search_count'] = len(products)
                 st.session_state['search_skipped'] = skipped
                 st.session_state['search_query_used'] = enhanced_query
@@ -856,12 +1000,12 @@ with tab2:
     # Display search results
     if 'search_deals' in st.session_state and st.session_state['search_deals']:
         search_deals = st.session_state['search_deals']
-        search_specs = st.session_state['search_specs']
+        current_specs_display = st.session_state.get('search_current_specs', {})
         skipped = st.session_state.get('search_skipped', 0)
 
-        msg = f"🇺🇸 Found {len(search_deals)} laptops with specs"
+        msg = f"🇺🇸 Found {len(search_deals)} laptops matching your requirements"
         if skipped > 0:
-            msg += f" ({skipped} listings filtered - missing specs)"
+            msg += f" ({skipped} filtered out)"
         st.success(msg)
 
         if not search_deals:
@@ -903,7 +1047,7 @@ with tab2:
             st.markdown("---")
             st.header("🎄 Create Your Santa Wishlist")
             num_items_search = st.slider("How many items?", 1, min(5, len(search_deals)), 3, key="search_wishlist_num")
-            wishlist_html_search = generate_santa_wishlist(search_deals, search_specs, num_items_search)
+            wishlist_html_search = generate_santa_wishlist(search_deals, current_specs_display, num_items_search)
             st.download_button(
                 label="🎅 Download Santa Wishlist",
                 data=wishlist_html_search,
