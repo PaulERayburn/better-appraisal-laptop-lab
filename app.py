@@ -442,8 +442,17 @@ with col2:
                                        help="e.g., 10 for Intel 10th gen i7-10750H")
     show_all = st.checkbox("Show all products (not just upgrades)")
 
+# Initialize session state
+if 'deals' not in st.session_state:
+    st.session_state['deals'] = None
+if 'current_specs' not in st.session_state:
+    st.session_state['current_specs'] = None
+if 'analyzed' not in st.session_state:
+    st.session_state['analyzed'] = False
+
 # Process
 if uploaded_file is not None:
+    # Analyze button
     if st.button("🔍 Analyze Deals", type="primary"):
         with st.spinner("Analyzing products..."):
             try:
@@ -456,9 +465,8 @@ if uploaded_file is not None:
 
             if error:
                 st.error(error)
+                st.session_state['analyzed'] = False
             else:
-                st.success(f"Found {len(products)} products!")
-
                 current_specs = {
                     'cpu_gen': current_cpu_gen,
                     'ram': current_ram,
@@ -467,69 +475,81 @@ if uploaded_file is not None:
 
                 deals = analyze_deals(products, current_specs, show_all)
 
-                if not deals:
-                    st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
-                else:
-                    # Store deals in session state for wishlist generation
-                    st.session_state['deals'] = deals
-                    st.session_state['current_specs'] = current_specs
+                # Store in session state
+                st.session_state['deals'] = deals
+                st.session_state['current_specs'] = current_specs
+                st.session_state['analyzed'] = True
+                st.session_state['product_count'] = len(products)
 
-                    # TOP 3 DEALS SECTION
-                    st.markdown("---")
-                    st.header("🏆 Top 3 Best Deals")
+    # Display results if we have analyzed data
+    if st.session_state['analyzed'] and st.session_state['deals'] is not None:
+        deals = st.session_state['deals']
+        current_specs = st.session_state['current_specs']
 
-                    top_3 = deals[:3]
-                    cols = st.columns(len(top_3))
+        st.success(f"Found {st.session_state.get('product_count', 0)} products!")
 
-                    medals = ["🥇", "🥈", "🥉"]
+        if not deals:
+            st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
+        else:
+            # TOP 3 DEALS SECTION
+            st.markdown("---")
+            st.header("🏆 Top 3 Best Deals")
 
-                    for i, (col, deal) in enumerate(zip(cols, top_3)):
-                        with col:
-                            st.markdown(f"### {medals[i]} #{i+1}")
-                            st.markdown(f"**{deal['name'][:50]}...**")
-                            st.markdown(f"💰 **${deal['price']:,.2f}**")
-                            if deal['saving'] > 0:
-                                st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
-                            st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
-                            st.link_button("View Deal", deal['url'])
+            top_3 = deals[:3]
+            cols = st.columns(len(top_3))
 
-                    # SANTA WISHLIST SECTION
-                    st.markdown("---")
-                    st.header("🎄 Create Your Santa Wishlist")
-                    st.markdown("Generate a festive wishlist to share with family (or Santa)!")
+            medals = ["🥇", "🥈", "🥉"]
 
-                    num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3)
+            for i, (col, deal) in enumerate(zip(cols, top_3)):
+                with col:
+                    st.markdown(f"### {medals[i]} #{i+1}")
+                    st.markdown(f"**{deal['name'][:50]}...**")
+                    st.markdown(f"💰 **${deal['price']:,.2f}**")
+                    if deal['saving'] > 0:
+                        st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
+                    st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
+                    st.link_button("View Deal", deal['url'])
 
-                    if st.button("🎅 Generate Santa Wishlist", type="secondary"):
-                        wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
+            # SANTA WISHLIST SECTION
+            st.markdown("---")
+            st.header("🎄 Create Your Santa Wishlist")
+            st.markdown("Generate a festive wishlist to share with family (or Santa)!")
 
-                        st.download_button(
-                            label="📥 Download Wishlist HTML",
-                            data=wishlist_html,
-                            file_name="santa_wishlist.html",
-                            mime="text/html"
-                        )
+            num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3)
 
-                        st.markdown("#### Preview:")
-                        st.components.v1.html(wishlist_html, height=600, scrolling=True)
+            # Generate wishlist HTML
+            wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
 
-                    # ALL DEALS TABLE
-                    st.markdown("---")
-                    st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
+            # Download button (doesn't cause rerun issues)
+            st.download_button(
+                label="🎅 Download Santa Wishlist",
+                data=wishlist_html,
+                file_name="santa_wishlist.html",
+                mime="text/html",
+                type="primary"
+            )
 
-                    for i, deal in enumerate(deals):
-                        with st.expander(f"**{i+1}. {deal['name'][:70]}...** — ${deal['price']:,.2f}" +
-                                        (f" (Save ${deal['saving']:.0f})" if deal['saving'] > 0 else "")):
-                            col1, col2 = st.columns([2, 1])
-                            with col1:
-                                st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
-                                st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
-                                st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
-                                st.markdown(f"**GPU:** {deal['specs']['gpu']}")
-                                if deal['notes']:
-                                    st.markdown(f"**Upgrades:** {', '.join(deal['notes'])}")
-                            with col2:
-                                st.link_button("🔗 View on Best Buy", deal['url'])
+            # Preview in expander
+            with st.expander("👀 Preview Wishlist"):
+                st.components.v1.html(wishlist_html, height=600, scrolling=True)
+
+            # ALL DEALS TABLE
+            st.markdown("---")
+            st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
+
+            for i, deal in enumerate(deals):
+                with st.expander(f"**{i+1}. {deal['name'][:70]}...** — ${deal['price']:,.2f}" +
+                                (f" (Save ${deal['saving']:.0f})" if deal['saving'] > 0 else "")):
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
+                        st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
+                        st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
+                        st.markdown(f"**GPU:** {deal['specs']['gpu']}")
+                        if deal['notes']:
+                            st.markdown(f"**Upgrades:** {', '.join(deal['notes'])}")
+                    with col2:
+                        st.link_button("🔗 View on Best Buy", deal['url'])
 
 else:
     st.info("👆 Upload a saved Best Buy HTML file to get started!")
