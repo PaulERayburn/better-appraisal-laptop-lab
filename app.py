@@ -9,7 +9,6 @@ import streamlit as st
 import json
 import re
 import requests
-from bs4 import BeautifulSoup
 
 # Page config
 st.set_page_config(
@@ -274,98 +273,93 @@ def extract_us_products(content):
     return products if products else None
 
 
-def search_bestbuy_us(query, max_results=24):
+def get_serpapi_key():
+    """Get SerpApi key from Streamlit secrets or environment."""
+    # Try Streamlit secrets first (for cloud deployment)
+    try:
+        return st.secrets.get("SERPAPI_KEY", "")
+    except Exception:
+        pass
+    # Fallback to environment variable (for local development)
+    import os
+    return os.environ.get("SERPAPI_KEY", "")
+
+
+def search_google_shopping(query, max_results=20):
     """
-    Search Best Buy US using their website and BeautifulSoup.
-    Note: This is experimental and may break if Best Buy changes their site structure.
+    Search Google Shopping using SerpApi.
+    Free tier: 250 searches/month.
     """
+    api_key = get_serpapi_key()
+
+    if not api_key:
+        return None, "Search API not configured. Please use the HTML upload method instead."
+
     products = []
 
-    # Best Buy US search URL
-    search_url = f"https://www.bestbuy.com/site/searchpage.jsp?st={query.replace(' ', '+')}"
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+    # SerpApi Google Shopping endpoint
+    params = {
+        "engine": "google_shopping",
+        "q": query,
+        "api_key": api_key,
+        "num": max_results,
+        "gl": "us",  # US results
+        "hl": "en"   # English
     }
 
     try:
-        response = requests.get(search_url, headers=headers, timeout=15)
+        response = requests.get("https://serpapi.com/search", params=params, timeout=30)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        data = response.json()
 
-        # Try to extract embedded JSON data first
-        scripts = soup.find_all('script')
-        for script in scripts:
-            if script.string and '__INITIAL_STATE__' in script.string:
-                match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', script.string, re.DOTALL)
-                if match:
-                    try:
-                        data = json.loads(match.group(1))
-                        # Navigate to products in the JSON structure
-                        if 'search' in data and 'searchResult' in data['search']:
-                            results = data['search']['searchResult'].get('products', [])
-                            for p in results[:max_results]:
-                                products.append({
-                                    'name': p.get('names', {}).get('short', p.get('name', '')),
-                                    'sku': p.get('sku', ''),
-                                    'price': p.get('priceWithoutEhf', p.get('regularPrice', 0)),
-                                    'saving': p.get('priceDiff', 0),
-                                    'seoUrl': p.get('url', ''),
-                                    'country': 'US'
-                                })
-                            return products, None
-                    except json.JSONDecodeError:
-                        pass
+        # Check for API errors
+        if "error" in data:
+            return None, f"API Error: {data['error']}"
 
-        # Fallback: parse HTML structure directly
-        product_items = soup.select('.sku-item')
+        # Extract shopping results
+        shopping_results = data.get("shopping_results", [])
 
-        for item in product_items[:max_results]:
-            try:
-                name_elem = item.select_one('.sku-title a')
-                price_elem = item.select_one('.priceView-customer-price span')
-                sku_elem = item.get('data-sku-id', '')
+        if not shopping_results:
+            return None, "No products found for this search."
 
-                if name_elem and price_elem:
-                    name = name_elem.get_text(strip=True)
-                    price_text = price_elem.get_text(strip=True).replace('$', '').replace(',', '')
-                    try:
-                        price = float(price_text)
-                    except ValueError:
-                        price = 0
+        for item in shopping_results[:max_results]:
+            # Extract price (remove $ and convert to float)
+            price_str = item.get("price", "$0")
+            if isinstance(price_str, str):
+                price = float(re.sub(r'[^\d.]', '', price_str) or 0)
+            else:
+                price = float(price_str) if price_str else 0
 
-                    # Try to get savings
-                    saving = 0
-                    savings_elem = item.select_one('.pricing-price__savings')
-                    if savings_elem:
-                        savings_text = savings_elem.get_text(strip=True)
-                        savings_match = re.search(r'Save\s*\$?([\d,]+)', savings_text)
-                        if savings_match:
-                            saving = float(savings_match.group(1).replace(',', ''))
+            # Extract original price for savings calculation
+            original_price_str = item.get("extracted_price", 0)
+            old_price_str = item.get("old_price", "")
+            saving = 0
 
-                    products.append({
-                        'name': name,
-                        'sku': sku_elem,
-                        'price': price,
-                        'saving': saving,
-                        'seoUrl': name_elem.get('href', ''),
-                        'country': 'US'
-                    })
-            except Exception:
-                continue
+            if old_price_str:
+                old_price = float(re.sub(r'[^\d.]', '', old_price_str) or 0)
+                if old_price > price:
+                    saving = old_price - price
 
-        if products:
-            return products, None
-        else:
-            return None, "No products found. Best Buy may have blocked the request or changed their page structure."
+            products.append({
+                'name': item.get("title", "Unknown Product"),
+                'sku': item.get("product_id", ""),
+                'price': price,
+                'saving': saving,
+                'seoUrl': item.get("link", ""),
+                'source': item.get("source", ""),  # Store name (Best Buy, Amazon, etc.)
+                'thumbnail': item.get("thumbnail", ""),
+                'country': 'US'
+            })
+
+        return products, None
 
     except requests.exceptions.Timeout:
         return None, "Request timed out. Try again later."
     except requests.exceptions.RequestException as e:
         return None, f"Failed to fetch search results: {str(e)}"
+    except json.JSONDecodeError:
+        return None, "Invalid response from search API."
 
 
 def analyze_deals(products, current_specs, show_all=False, country="CA"):
@@ -697,11 +691,8 @@ with st.sidebar:
     """)
 
     st.markdown("---")
-    st.markdown("⚠️ **Note:** Best Buy Canada works best. US support is experimental.")
-
-    st.markdown("---")
     st.markdown("### 🔍 Live Search (US)")
-    st.markdown("Try the **Live Search** tab to search Best Buy US directly without saving a page!")
+    st.markdown("Use the **Live Search** tab to search US retailers (Best Buy, Amazon, Walmart) without saving pages!")
 
     st.markdown("---")
     st.markdown("Made with ❤️ | [GitHub](https://github.com/PaulERayburn/bestbuy-deal-finder)")
@@ -715,7 +706,7 @@ if 'analyzed' not in st.session_state:
     st.session_state['analyzed'] = False
 
 # Main content - Tabs for different input methods
-tab1, tab2 = st.tabs(["📁 Upload HTML File", "🔍 Live Search (US - Experimental)"])
+tab1, tab2 = st.tabs(["📁 Upload HTML File (Canada)", "🔍 Live Search (US)"])
 
 with tab1:
     col1, col2 = st.columns([2, 1])
@@ -743,14 +734,14 @@ with tab1:
         show_all = st.checkbox("Show all products (not just upgrades)", key="upload_show_all")
 
 with tab2:
-    st.header("🔍 Live Search Best Buy US")
-    st.warning("⚠️ **Experimental Feature:** This searches Best Buy US directly. Results may be limited due to anti-bot measures.")
+    st.header("🔍 Live Search (US)")
+    st.info("🛒 Searches Google Shopping for laptop deals across multiple US retailers (Best Buy, Amazon, Walmart, etc.)")
 
     search_col1, search_col2 = st.columns([2, 1])
 
     with search_col1:
         search_query = st.text_input("Search for laptops", value="gaming laptop", placeholder="e.g., gaming laptop RTX 4060")
-        search_button = st.button("🔍 Search Best Buy US", type="primary")
+        search_button = st.button("🔍 Search Laptops", type="primary")
 
     with search_col2:
         st.subheader("⚙️ Your Current Specs")
@@ -765,8 +756,8 @@ with tab2:
 
     # Handle live search
     if search_button:
-        with st.spinner(f"Searching Best Buy US for '{search_query}'..."):
-            products, error = search_bestbuy_us(search_query)
+        with st.spinner(f"Searching for '{search_query}'..."):
+            products, error = search_google_shopping(search_query)
 
             if error:
                 st.error(error)
@@ -789,7 +780,7 @@ with tab2:
         search_deals = st.session_state['search_deals']
         search_specs = st.session_state['search_specs']
 
-        st.success(f"🇺🇸 Found {st.session_state.get('search_count', 0)} products from Best Buy US!")
+        st.success(f"🇺🇸 Found {st.session_state.get('search_count', 0)} products from Google Shopping!")
 
         if not search_deals:
             st.warning("No upgrades found. Try 'Show all products' or adjust your specs.")
@@ -805,6 +796,10 @@ with tab2:
             for i, (col, deal) in enumerate(zip(cols, top_3)):
                 with col:
                     st.markdown(f"### {medals[i]} #{i+1}")
+                    # Show store source if available
+                    source = deal.get('source', '')
+                    if source:
+                        st.markdown(f"🏪 **{source}**")
                     condition = deal.get('condition', 'New')
                     if condition != 'New':
                         st.markdown(f"🏷️ **{condition}**")
@@ -841,14 +836,18 @@ with tab2:
             st.header(f"📊 All Results ({len(search_deals)})")
             for i, deal in enumerate(search_deals):
                 condition = deal.get('condition', 'New')
+                source = deal.get('source', '')
+                source_badge = f" @ {source}" if source else ""
                 condition_badge = "" if condition == "New" else f" [{condition}]"
-                with st.expander(f"**{i+1}. {deal['name'][:65]}...**{condition_badge} — ${deal['price']:,.2f}"):
+                with st.expander(f"**{i+1}. {deal['name'][:55]}...**{condition_badge}{source_badge} — ${deal['price']:,.2f}"):
+                    if source:
+                        st.markdown(f"**Store:** {source}")
                     st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
                     st.markdown(f"**RAM:** {deal['specs']['ram']}GB | **Storage:** {deal['specs']['storage']}GB")
                     st.markdown(f"**GPU:** {deal['specs']['gpu']}")
                     if deal['specs']['screen_size'] > 0:
                         st.markdown(f"**Screen:** {deal['specs']['screen_size']}\" {deal['specs']['resolution']}")
-                    st.link_button("🔗 View on Best Buy", deal['url'])
+                    st.link_button("🔗 View Deal", deal['url'])
 
     # Process uploaded file (tab1 content continues)
     if uploaded_file is not None:
