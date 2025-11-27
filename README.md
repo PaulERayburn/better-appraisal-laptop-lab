@@ -1,8 +1,14 @@
 # Best Buy Deal Finder
 
-A simple Python tool that helps you find laptop upgrade deals from Best Buy Canada by parsing saved webpage HTML files.
+A simple tool to find laptop upgrade deals from Best Buy Canada.
 
-**No API keys needed. No web scraping. Just save the page and run the script!**
+**No API keys needed. No web scraping. Just save the page and upload it!**
+
+## Try It Now (No Install Required)
+
+**[Launch Web App](https://bestbuy-deal-finder.streamlit.app)** - Just upload your saved HTML file and go!
+
+---
 
 ## How It Works
 
@@ -152,10 +158,8 @@ Higher scores appear first. When scores tie, cheaper laptops rank higher.
 
 ## Project Files
 
-- `bestbuy_deal_finder.py` - Main script (this is all you need)
-- `analyze_deals.py` - Original analysis script
-- `inspect_data.py` - Debug utility to inspect JSON structure
-- `parse_urls.py` - Extract product URLs
+- `app.py` - Streamlit web app (hosted version)
+- `bestbuy_deal_finder.py` - Command line script (for advanced users)
 
 ## Contributing
 
