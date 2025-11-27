@@ -1,11 +1,16 @@
-# Best Buy Deal Finder
+# better-appraisal-laptop-lab
+Originally known as the Best Buy Deal Finder Just in time for Black Friday shopping!!
+The Better Appraisal Laptop Lab is a small experimental playground designed to show appraisers what becomes possible when we take control of our own technology using the tools available today. At its core, it’s a lightweight tool for finding potential laptop upgrade deals, either by parsing downloaded HTML pages with a long list of intially searched options or by querying Google Shopping through SERPAPI.
 
-A simple Python tool that helps you find laptop upgrade deals from Best Buy Canada by parsing saved webpage HTML files.
+You can run it locally using your own downloaded HTML, or try the lightweight hosted version built with GitHub direct to Streamlit. If you want more power, you can plug in your own API key and take the tool further. It’s flexible by design: transparent, easy to inspect, and simple to modify.
 
-**No API keys needed. No web scraping. Just save the page and run the script!**
+This project began as a quick demo for my AIC-BC presentation Gen AI & the Appraiser. The idea wasn’t really about laptops; it was about demonstrating how modern AI-assisted coding tools (ClaudeCode, Codex, Gemini CLI, and others) enable appraisers to build their own utilities. These are tools created for appraisers, by appraisers, with clear logic and full control over how data is handled.
 
+The broader message is straightforward: the profession is no longer limited to whatever software the market happens to provide. With today’s development tools, appraisers can create purpose-built utilities for their own use or as part of larger initiatives, and steadily raise the standard for the technology our work depends on.
+
+If you’re interested in strengthening the appraisal community through open, transparent, appraiser-driven tools, feel free to explore the repo, fork it, run it locally, or contribute.
 ## How It Works
-
+Keep in mind ongoing changes and updates may change the workflow but we will do our best to keep the README updated
 Best Buy's website stores product data in a JSON blob embedded in the HTML. This tool:
 
 1. Reads an HTML file you save from your browser
