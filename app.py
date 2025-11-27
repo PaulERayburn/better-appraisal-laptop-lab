@@ -179,29 +179,46 @@ def extract_products_from_html(content, country="CA"):
     """Extract product data from Best Buy saved HTML page (US or Canada)."""
 
     # Try Canada format first (window.__INITIAL_STATE__)
-    match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', content, re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(1))
-            products = []
+    # Find the start of the JSON object
+    state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*\{', content)
+    if state_match:
+        # Find the matching closing brace by counting braces
+        start_pos = state_match.end() - 1  # Position of opening {
+        brace_count = 0
+        end_pos = start_pos
 
-            if 'productList' in data and 'data' in data['productList']:
-                p_data = data['productList']['data']
-                if p_data:
-                    products = p_data.get('products', p_data.get('results', []))
+        for i, char in enumerate(content[start_pos:], start_pos):
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_pos = i + 1
+                    break
 
-            if not products and 'search' in data:
-                search = data['search']
-                if 'searchResult' in search:
-                    sr = search['searchResult']
-                    products = sr.get('results', sr.get('products', []))
-                elif 'results' in search:
-                    products = search['results']
+        if end_pos > start_pos:
+            json_str = content[start_pos:end_pos]
+            try:
+                data = json.loads(json_str)
+                products = []
 
-            if products:
-                return products, None, "CA"
-        except json.JSONDecodeError:
-            pass
+                if 'productList' in data and 'data' in data['productList']:
+                    p_data = data['productList']['data']
+                    if p_data:
+                        products = p_data.get('products', p_data.get('results', []))
+
+                if not products and 'search' in data:
+                    search = data['search']
+                    if 'searchResult' in search:
+                        sr = search['searchResult']
+                        products = sr.get('results', sr.get('products', []))
+                    elif 'results' in search:
+                        products = search['results']
+
+                if products:
+                    return products, None, "CA"
+            except json.JSONDecodeError:
+                pass
 
     # Try US format (GraphQL/Apollo style embedded in HTML)
     # US Best Buy embeds product data differently - we need to extract it from the page
