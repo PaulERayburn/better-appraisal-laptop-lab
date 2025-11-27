@@ -1249,117 +1249,117 @@ with tab1:
                     st.session_state['country'] = country
                     st.session_state['is_demo'] = False  # Clear demo flag for real uploads
 
-        # Display results if we have analyzed data
-        if st.session_state['analyzed'] and st.session_state['deals'] is not None:
-            deals = st.session_state['deals']
-            current_specs = st.session_state['current_specs']
-            country = st.session_state.get('country', 'CA')
-            is_demo = st.session_state.get('is_demo', False)
+    # Display results if we have analyzed data (outside the uploaded_file block so demo works too)
+    if st.session_state['analyzed'] and st.session_state['deals'] is not None:
+        deals = st.session_state['deals']
+        current_specs = st.session_state['current_specs']
+        country = st.session_state.get('country', 'CA')
+        is_demo = st.session_state.get('is_demo', False)
 
-            country_flag = "🇺🇸" if country == "US" else "🇨🇦"
-            country_name = "US" if country == "US" else "Canada"
+        country_flag = "🇺🇸" if country == "US" else "🇨🇦"
+        country_name = "US" if country == "US" else "Canada"
 
-            if is_demo:
-                st.success(f"🎮 **Demo Mode:** Showing {st.session_state.get('product_count', 0)} sample products")
-                st.info("This is sample data to help you explore the app. Upload your own Best Buy HTML file for real deals!")
-            else:
-                st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
+        if is_demo:
+            st.success(f"🎮 **Demo Mode:** Showing {st.session_state.get('product_count', 0)} sample products")
+            st.info("This is sample data to help you explore the app. Upload your own Best Buy HTML file for real deals!")
+        else:
+            st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
 
-            if country == "US" and not is_demo:
-                st.warning("⚠️ **US Support is Experimental:** Best Buy US uses dynamic loading, so only some products may be captured. For best results, use Best Buy Canada.")
+        if country == "US" and not is_demo:
+            st.warning("⚠️ **US Support is Experimental:** Best Buy US uses dynamic loading, so only some products may be captured. For best results, use Best Buy Canada.")
 
-            if not deals:
-                st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
-            else:
-                # TOP 3 DEALS SECTION
-                st.markdown("---")
-                st.header("🏆 Top 3 Best Deals")
+        if not deals:
+            st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
+        else:
+            # TOP 3 DEALS SECTION
+            st.markdown("---")
+            st.header("🏆 Top 3 Best Deals")
 
-                top_3 = deals[:3]
-                cols = st.columns(len(top_3))
+            top_3 = deals[:3]
+            cols = st.columns(len(top_3))
 
-                medals = ["🥇", "🥈", "🥉"]
+            medals = ["🥇", "🥈", "🥉"]
 
-                for i, (col, deal) in enumerate(zip(cols, top_3)):
-                    with col:
-                        st.markdown(f"### {medals[i]} #{i+1}")
-                        # Show condition badge if not New
-                        condition = deal.get('condition', 'New')
-                        if condition != 'New':
-                            st.markdown(f"🏷️ **{condition}**")
-                        st.markdown(f"**{deal['name'][:50]}...**")
-                        st.markdown(f"💰 **${deal['price']:,.2f}**")
-                        if deal['saving'] > 0:
-                            st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
-                        st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
-                        # Screen info
-                        screen_info = []
-                        if deal['specs']['screen_size'] > 0:
-                            screen_info.append(f"{deal['specs']['screen_size']}\"")
-                        if deal['specs']['resolution'] != 'Unknown':
-                            screen_info.append(deal['specs']['resolution'])
-                        if screen_info:
-                            st.markdown(f"🖥️ {' '.join(screen_info)}")
-                        st.link_button("View Deal", deal['url'])
-
-                # SANTA WISHLIST SECTION
-                st.markdown("---")
-                st.header("🎄 Create Your Santa Wishlist")
-                st.markdown("Generate a festive wishlist to share with family (or Santa)!")
-
-                num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3, key="upload_wishlist_num")
-
-                # Generate wishlist HTML
-                wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
-
-                # Preview and download buttons side by side
-                col_preview, col_download = st.columns(2)
-                with col_preview:
-                    if st.button("👀 Preview Wishlist", key="upload_preview_btn"):
-                        st.session_state['show_upload_preview'] = True
-                with col_download:
-                    st.download_button(
-                        label="🎅 Download Santa Wishlist",
-                        data=wishlist_html,
-                        file_name="santa_wishlist.html",
-                        mime="text/html",
-                        type="primary",
-                        key="upload_wishlist_btn"
-                    )
-
-                # Show preview if requested
-                if st.session_state.get('show_upload_preview', False):
-                    st.components.v1.html(wishlist_html, height=600, scrolling=True)
-
-                # ALL DEALS TABLE
-                st.markdown("---")
-                st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
-
-                for i, deal in enumerate(deals):
+            for i, (col, deal) in enumerate(zip(cols, top_3)):
+                with col:
+                    st.markdown(f"### {medals[i]} #{i+1}")
+                    # Show condition badge if not New
                     condition = deal.get('condition', 'New')
-                    condition_badge = "" if condition == "New" else f" [{condition}]"
-                    with st.expander(f"**{i+1}. {deal['name'][:65]}...**{condition_badge} — ${deal['price']:,.2f}" +
-                                    (f" (Save ${deal['saving']:.0f})" if deal['saving'] > 0 else "")):
-                        dcol1, dcol2 = st.columns([2, 1])
-                        with dcol1:
-                            if condition != 'New':
-                                st.markdown(f"**Condition:** {condition}")
-                            st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
-                            st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
-                            st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
-                            st.markdown(f"**GPU:** {deal['specs']['gpu']}")
-                            # Screen specs
-                            if deal['specs']['screen_size'] > 0:
-                                st.markdown(f"**Screen:** {deal['specs']['screen_size']}\"")
-                            if deal['specs']['resolution'] != 'Unknown':
-                                st.markdown(f"**Resolution:** {deal['specs']['resolution']}")
-                            if deal['notes']:
-                                st.markdown(f"**Upgrades:** {', '.join(deal['notes'])}")
-                        with dcol2:
-                            st.link_button("🔗 View on Best Buy", deal['url'])
+                    if condition != 'New':
+                        st.markdown(f"🏷️ **{condition}**")
+                    st.markdown(f"**{deal['name'][:50]}...**")
+                    st.markdown(f"💰 **${deal['price']:,.2f}**")
+                    if deal['saving'] > 0:
+                        st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
+                    st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
+                    # Screen info
+                    screen_info = []
+                    if deal['specs']['screen_size'] > 0:
+                        screen_info.append(f"{deal['specs']['screen_size']}\"")
+                    if deal['specs']['resolution'] != 'Unknown':
+                        screen_info.append(deal['specs']['resolution'])
+                    if screen_info:
+                        st.markdown(f"🖥️ {' '.join(screen_info)}")
+                    st.link_button("View Deal", deal['url'])
 
-    else:
-        st.info("👆 Upload a saved Best Buy HTML file to get started!")
+            # SANTA WISHLIST SECTION
+            st.markdown("---")
+            st.header("🎄 Create Your Santa Wishlist")
+            st.markdown("Generate a festive wishlist to share with family (or Santa)!")
+
+            num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3, key="upload_wishlist_num")
+
+            # Generate wishlist HTML
+            wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
+
+            # Preview and download buttons side by side
+            col_preview, col_download = st.columns(2)
+            with col_preview:
+                if st.button("👀 Preview Wishlist", key="upload_preview_btn"):
+                    st.session_state['show_upload_preview'] = True
+            with col_download:
+                st.download_button(
+                    label="🎅 Download Santa Wishlist",
+                    data=wishlist_html,
+                    file_name="santa_wishlist.html",
+                    mime="text/html",
+                    type="primary",
+                    key="upload_wishlist_btn"
+                )
+
+            # Show preview if requested
+            if st.session_state.get('show_upload_preview', False):
+                st.components.v1.html(wishlist_html, height=600, scrolling=True)
+
+            # ALL DEALS TABLE
+            st.markdown("---")
+            st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
+
+            for i, deal in enumerate(deals):
+                condition = deal.get('condition', 'New')
+                condition_badge = "" if condition == "New" else f" [{condition}]"
+                with st.expander(f"**{i+1}. {deal['name'][:65]}...**{condition_badge} — ${deal['price']:,.2f}" +
+                                (f" (Save ${deal['saving']:.0f})" if deal['saving'] > 0 else "")):
+                    dcol1, dcol2 = st.columns([2, 1])
+                    with dcol1:
+                        if condition != 'New':
+                            st.markdown(f"**Condition:** {condition}")
+                        st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
+                        st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
+                        st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
+                        st.markdown(f"**GPU:** {deal['specs']['gpu']}")
+                        # Screen specs
+                        if deal['specs']['screen_size'] > 0:
+                            st.markdown(f"**Screen:** {deal['specs']['screen_size']}\"")
+                        if deal['specs']['resolution'] != 'Unknown':
+                            st.markdown(f"**Resolution:** {deal['specs']['resolution']}")
+                        if deal['notes']:
+                            st.markdown(f"**Upgrades:** {', '.join(deal['notes'])}")
+                    with dcol2:
+                        st.link_button("🔗 View on Best Buy", deal['url'])
+
+    if not st.session_state['analyzed']:
+        st.info("👆 Upload a saved Best Buy HTML file or try the demo to get started!")
 
         # Demo section
         with st.expander("ℹ️ What does this tool do?"):
