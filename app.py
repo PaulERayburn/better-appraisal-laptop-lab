@@ -36,6 +36,25 @@ def parse_size(size_str):
     return 0
 
 
+def extract_condition(name):
+    """Extract product condition from name (New, Refurbished, Open Box)."""
+    name_lower = name.lower()
+
+    if 'refurbished' in name_lower:
+        # Try to get the grade too (Excellent, Good, Fair)
+        if '(excellent)' in name_lower or 'excellent' in name_lower:
+            return 'Refurbished (Excellent)'
+        elif '(good)' in name_lower or 'good' in name_lower:
+            return 'Refurbished (Good)'
+        elif '(fair)' in name_lower:
+            return 'Refurbished (Fair)'
+        return 'Refurbished'
+    elif 'open box' in name_lower:
+        return 'Open Box'
+    else:
+        return 'New'
+
+
 def extract_specs(name):
     """Extract CPU, RAM, Storage, and GPU specs from a product name string."""
     specs = {
@@ -232,6 +251,7 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
         sku = p.get('sku') or p.get('skuId', '')
 
         specs = extract_specs(name)
+        condition = extract_condition(name)
 
         seo_url = p.get('seoUrl', '')
         if country == "US":
@@ -270,6 +290,7 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
             'price': price,
             'saving': saving,
             'specs': specs,
+            'condition': condition,
             'notes': notes,
             'score': score,
             'url': url,
@@ -317,6 +338,9 @@ def generate_santa_wishlist(deals, current_specs, top_n=3):
                 comparisons.append(f"{deal['specs']['ram']}GB (More than mine!)")
 
         specs_html = ""
+        condition = deal.get('condition', 'New')
+        if condition != 'New':
+            specs_html += f"<li><strong>Condition:</strong> {condition}</li>\n"
         if deal['specs']['cpu_gen'] > 0:
             specs_html += f"<li><strong>CPU:</strong> {deal['specs']['cpu_model']} ({deal['specs']['cpu_gen']}th Gen)</li>\n"
         if deal['specs']['ram'] > 0:
@@ -338,9 +362,12 @@ def generate_santa_wishlist(deals, current_specs, top_n=3):
         if deal['specs']['gpu'] != 'Integrated':
             specs_html += f"<li><strong>GPU:</strong> {deal['specs']['gpu']}</li>\n"
 
+        # Add condition badge in title if not new
+        condition_badge = f" ({condition})" if condition != 'New' else ""
+
         items_html += f'''
     <div class="item">
-        <h2>{i+1}. {title}</h2>
+        <h2>{i+1}. {title}{condition_badge}</h2>
         <p><strong>{deal['name'][:60]}{'...' if len(deal['name']) > 60 else ''}</strong></p>
         <p>{desc}</p>
         <ul class="specs">
@@ -602,6 +629,10 @@ if uploaded_file is not None:
             for i, (col, deal) in enumerate(zip(cols, top_3)):
                 with col:
                     st.markdown(f"### {medals[i]} #{i+1}")
+                    # Show condition badge if not New
+                    condition = deal.get('condition', 'New')
+                    if condition != 'New':
+                        st.markdown(f"🏷️ **{condition}**")
                     st.markdown(f"**{deal['name'][:50]}...**")
                     st.markdown(f"💰 **${deal['price']:,.2f}**")
                     if deal['saving'] > 0:
@@ -637,10 +668,14 @@ if uploaded_file is not None:
             st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
 
             for i, deal in enumerate(deals):
-                with st.expander(f"**{i+1}. {deal['name'][:70]}...** — ${deal['price']:,.2f}" +
+                condition = deal.get('condition', 'New')
+                condition_badge = "" if condition == "New" else f" [{condition}]"
+                with st.expander(f"**{i+1}. {deal['name'][:65]}...**{condition_badge} — ${deal['price']:,.2f}" +
                                 (f" (Save ${deal['saving']:.0f})" if deal['saving'] > 0 else "")):
                     col1, col2 = st.columns([2, 1])
                     with col1:
+                        if condition != 'New':
+                            st.markdown(f"**Condition:** {condition}")
                         st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
                         st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
                         st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
