@@ -328,7 +328,7 @@ def build_search_query(base_query, specs):
     return " ".join(query_parts)
 
 
-def search_google_shopping(query, max_results=20, specs=None):
+def search_google_shopping(query, max_results=40, specs=None):
     """
     Search Google Shopping using SerpApi.
     Free tier: 250 searches/month.
@@ -570,6 +570,14 @@ def analyze_deals_with_filters(products, current_specs, min_specs, show_all=Fals
                 skipped += 1
                 continue
             if specs['screen_size'] > 0 and specs['screen_size'] < min_specs.get('screen_size', 0):
+                skipped += 1
+                continue
+            # Resolution filtering
+            min_res = min_specs.get('resolution', 'FHD')
+            min_res_rank = resolution_rank.get(min_res, 3)
+            product_res_rank = resolution_rank.get(specs['resolution'], 0)
+            # Only filter if we detected a resolution AND it's below minimum
+            if product_res_rank > 0 and product_res_rank < min_res_rank:
                 skipped += 1
                 continue
 
@@ -1003,13 +1011,18 @@ with tab2:
         current_specs_display = st.session_state.get('search_current_specs', {})
         skipped = st.session_state.get('search_skipped', 0)
 
-        msg = f"🇺🇸 Found {len(search_deals)} laptops matching your requirements"
-        if skipped > 0:
-            msg += f" ({skipped} filtered out)"
-        st.success(msg)
+        if len(search_deals) == 0:
+            st.warning(f"No laptops matched your requirements ({skipped} filtered out). Try lowering your minimum specs or check 'Show all results'.")
+        elif len(search_deals) <= 3:
+            st.warning(f"🇺🇸 Found only {len(search_deals)} laptop(s) matching requirements ({skipped} filtered out). Consider lowering minimum specs for more options.")
+        else:
+            msg = f"🇺🇸 Found {len(search_deals)} laptops matching your requirements"
+            if skipped > 0:
+                msg += f" ({skipped} filtered out)"
+            st.success(msg)
 
         if not search_deals:
-            st.warning("No upgrades found. Try 'Show all products' or adjust your specs.")
+            pass  # Already showed warning above
         else:
             # Top 3 deals
             st.markdown("---")
