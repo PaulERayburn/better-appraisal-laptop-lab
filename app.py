@@ -909,6 +909,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("Made with ❤️ | [GitHub](https://github.com/PaulERayburn/bestbuy-deal-finder)")
+    st.caption("v1.1.0")
 
 # Initialize session state (must be before tabs)
 if 'deals' not in st.session_state:
