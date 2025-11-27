@@ -285,7 +285,38 @@ def get_serpapi_key():
     return os.environ.get("SERPAPI_KEY", "")
 
 
-def search_google_shopping(query, max_results=20):
+def build_search_query(base_query, specs):
+    """Build an optimized search query based on user's desired specs."""
+    query_parts = [base_query]
+
+    # Add RAM requirement if significant
+    if specs.get('ram', 0) >= 32:
+        query_parts.append(f"{specs['ram']}GB RAM")
+    elif specs.get('ram', 0) >= 16:
+        query_parts.append("16GB+ RAM")
+
+    # Add storage requirement
+    if specs.get('storage', 0) >= 1024:
+        tb = specs['storage'] // 1024
+        query_parts.append(f"{tb}TB SSD")
+    elif specs.get('storage', 0) >= 512:
+        query_parts.append("512GB+ SSD")
+
+    # Add screen size
+    if specs.get('screen_size', 0) >= 17:
+        query_parts.append('17"')
+    elif specs.get('screen_size', 0) >= 15:
+        query_parts.append('15.6"')
+
+    # Add resolution
+    resolution = specs.get('resolution', 'FHD')
+    if resolution in ['4K UHD', 'QHD+', 'QHD']:
+        query_parts.append(resolution.replace(' ', ''))
+
+    return " ".join(query_parts)
+
+
+def search_google_shopping(query, max_results=20, specs=None):
     """
     Search Google Shopping using SerpApi.
     Free tier: 250 searches/month.
@@ -297,6 +328,10 @@ def search_google_shopping(query, max_results=20):
 
     products = []
 
+    # Build enhanced query if specs provided
+    if specs:
+        query = build_search_query(query, specs)
+
     # SerpApi Google Shopping endpoint
     params = {
         "engine": "google_shopping",
@@ -304,7 +339,8 @@ def search_google_shopping(query, max_results=20):
         "api_key": api_key,
         "num": max_results,
         "gl": "us",  # US results
-        "hl": "en"   # English
+        "hl": "en",  # English
+        "direct_link": "true"  # Request direct retailer links
     }
 
     try:
@@ -341,12 +377,19 @@ def search_google_shopping(query, max_results=20):
                 if old_price > price:
                     saving = old_price - price
 
+            # Get the best available link (prefer direct link, fallback to product_link)
+            direct_link = item.get("link", "")
+            product_link = item.get("product_link", "")
+
+            # Use direct link if available, otherwise use Google Shopping product page
+            best_link = direct_link if direct_link else product_link
+
             products.append({
                 'name': item.get("title", "Unknown Product"),
                 'sku': item.get("product_id", ""),
                 'price': price,
                 'saving': saving,
-                'seoUrl': item.get("link", ""),
+                'seoUrl': best_link,
                 'source': item.get("source", ""),  # Store name (Best Buy, Amazon, etc.)
                 'thumbnail': item.get("thumbnail", ""),
                 'country': 'US'
@@ -744,36 +787,47 @@ with tab2:
         search_button = st.button("🔍 Search Laptops", type="primary")
 
     with search_col2:
-        st.subheader("⚙️ Your Current Specs")
-        search_ram = st.number_input("RAM (GB)", min_value=1, max_value=128, value=16, key="search_ram")
-        search_storage = st.number_input("Storage (GB)", min_value=64, max_value=8000, value=512, key="search_storage")
-        search_cpu_gen = st.number_input("CPU Generation", min_value=1, max_value=20, value=10, key="search_cpu")
-        search_screen_size = st.number_input("Screen Size (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1, key="search_screen")
-        search_resolution = st.selectbox("Screen Resolution",
+        st.subheader("⚙️ Minimum Specs Wanted")
+        search_ram = st.number_input("Min RAM (GB)", min_value=8, max_value=128, value=16, key="search_ram",
+                                     help="Minimum RAM - search will include this in query if 16GB+")
+        search_storage = st.number_input("Min Storage (GB)", min_value=256, max_value=8000, value=512, key="search_storage",
+                                         help="Minimum SSD storage")
+        search_cpu_gen = st.number_input("Min CPU Generation", min_value=1, max_value=20, value=10, key="search_cpu",
+                                         help="Used to filter results after search")
+        search_screen_size = st.number_input("Min Screen Size (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1, key="search_screen")
+        search_resolution = st.selectbox("Min Resolution",
                                          options=["HD", "HD+", "FHD", "FHD+", "QHD", "QHD+", "4K UHD"],
-                                         index=2, key="search_res")
-        search_show_all = st.checkbox("Show all products (not just upgrades)", key="search_show_all")
+                                         index=2, key="search_res",
+                                         help="QHD/4K will be added to search query")
+        search_show_all = st.checkbox("Show all results (skip spec filtering)", key="search_show_all")
 
     # Handle live search
     if search_button:
-        with st.spinner(f"Searching for '{search_query}'..."):
-            products, error = search_google_shopping(search_query)
+        # Build specs dict for query enhancement
+        search_specs = {
+            'cpu_gen': search_cpu_gen,
+            'ram': search_ram,
+            'storage': search_storage,
+            'screen_size': search_screen_size,
+            'resolution': search_resolution
+        }
+
+        # Show the enhanced query being used
+        enhanced_query = build_search_query(search_query, search_specs)
+        st.info(f"🔎 Searching: **{enhanced_query}**")
+
+        with st.spinner(f"Searching..."):
+            products, error = search_google_shopping(search_query, specs=search_specs)
 
             if error:
                 st.error(error)
             elif products:
-                search_specs = {
-                    'cpu_gen': search_cpu_gen,
-                    'ram': search_ram,
-                    'storage': search_storage,
-                    'screen_size': search_screen_size,
-                    'resolution': search_resolution
-                }
                 search_deals = analyze_deals(products, search_specs, search_show_all, "US")
 
                 st.session_state['search_deals'] = search_deals
                 st.session_state['search_specs'] = search_specs
                 st.session_state['search_count'] = len(products)
+                st.session_state['search_query_used'] = enhanced_query
 
     # Display search results
     if 'search_deals' in st.session_state and st.session_state['search_deals']:
