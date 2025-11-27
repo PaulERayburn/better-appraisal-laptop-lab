@@ -970,7 +970,7 @@ with st.sidebar:
     st.markdown("Use the **Live Search** tab to search US retailers (Best Buy, Amazon, Walmart) without saving pages!")
 
     st.markdown("---")
-    st.markdown("Made with ❤️ | [GitHub](https://github.com/PaulERayburn/bestbuy-deal-finder)")
+    st.markdown("Made with ❤️ | [GitHub](https://github.com/PaulERayburn/better-appraisal-laptop-lab)")
     st.caption("v1.1.0")
 
 # Initialize session state (must be before tabs)
