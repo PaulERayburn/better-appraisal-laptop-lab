@@ -91,28 +91,40 @@ def extract_specs(name):
         series = int(amd_match.group(2)[0])
         specs['cpu_gen'] = series + 6
 
-    # RAM
+    # RAM - multiple patterns to catch various formats
     ram_patterns = [
-        r'(\d+)\s*GB\s*(?:DDR\d?)?\s*RAM',
-        r'(\d+)\s*GB\s*DDR\d',
-        r'/\s*(\d+)\s*GB\s*/',
+        r'(\d+)\s*GB\s*(?:DDR\d?)?\s*RAM',           # 16GB DDR5 RAM, 16GB RAM
+        r'(\d+)\s*GB\s*DDR\d',                        # 16GB DDR5
+        r'[,/\s](\d+)\s*GB[,/\s]',                    # /16GB/ or , 16GB,
+        r'(\d+)GB(?:\s|,|/|-|$)',                     # 16GB followed by separator or end
+        r'[^\d](\d+)\s*GB\s+(?:Memory|Mem)',          # 16 GB Memory
+        r'-\s*(\d+)GB',                               # -16GB
     ]
     for pattern in ram_patterns:
         ram_match = re.search(pattern, name, re.IGNORECASE)
         if ram_match:
-            specs['ram'] = int(ram_match.group(1))
-            break
+            ram_val = int(ram_match.group(1))
+            # Valid RAM sizes for laptops (8, 12, 16, 24, 32, 64, 128)
+            if ram_val in [8, 12, 16, 24, 32, 48, 64, 96, 128]:
+                specs['ram'] = ram_val
+                break
 
-    # Storage
+    # Storage - multiple patterns for SSD/storage
     storage_patterns = [
-        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*SSD',
-        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*(?:NVMe|PCIe)',
-        r'/\s*(\d+(?:\.\d+)?)\s*(TB|GB)\s*/',
+        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*SSD',           # 512GB SSD, 1TB SSD
+        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*(?:NVMe|PCIe)', # 512GB NVMe
+        r'SSD[:\s]*(\d+(?:\.\d+)?)\s*(TB|GB)',        # SSD: 512GB
+        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*(?:Storage|Hard|Drive)', # 512GB Storage
+        r'[,/\s](\d+)\s*(TB)[,/\s]',                  # /1TB/ - TB is likely storage
+        r'[,/\s](512|256|1024|2048)\s*GB[,/\s]',     # Common SSD sizes
     ]
     for pattern in storage_patterns:
         storage_match = re.search(pattern, name, re.IGNORECASE)
         if storage_match:
-            specs['storage'] = parse_size(f"{storage_match.group(1)}{storage_match.group(2)}")
+            if len(storage_match.groups()) >= 2:
+                specs['storage'] = parse_size(f"{storage_match.group(1)}{storage_match.group(2)}")
+            else:
+                specs['storage'] = parse_size(f"{storage_match.group(1)}GB")
             break
 
     # GPU
@@ -405,7 +417,7 @@ def search_google_shopping(query, max_results=20, specs=None):
         return None, "Invalid response from search API."
 
 
-def analyze_deals(products, current_specs, show_all=False, country="CA"):
+def analyze_deals(products, current_specs, show_all=False, country="CA", filter_incomplete=True):
     """Analyze products and compare against current specs."""
     if country == "US":
         base_url = "https://www.bestbuy.com"
@@ -413,6 +425,7 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
         base_url = "https://www.bestbuy.ca"
 
     deals = []
+    skipped_incomplete = 0
 
     for p in products:
         name = p.get('name', '')
@@ -428,13 +441,22 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
         specs = extract_specs(name)
         condition = extract_condition(name)
 
+        # Filter out products with incomplete specs (no RAM detected)
+        # This helps remove accessories, bundles, and poorly-formatted listings
+        if filter_incomplete and specs['ram'] == 0:
+            skipped_incomplete += 1
+            continue
+
         seo_url = p.get('seoUrl', '')
-        if country == "US":
-            url = f"{base_url}/site/{sku}.p?skuId={sku}"
+        # Use the URL directly if it's a full URL (from Google Shopping)
+        if seo_url and seo_url.startswith('http'):
+            url = seo_url
+        elif country == "US":
+            url = f"{base_url}/site/{sku}.p?skuId={sku}" if sku else seo_url
         elif seo_url:
-            url = seo_url if seo_url.startswith('http') else base_url + seo_url
+            url = base_url + seo_url
         else:
-            url = f"{base_url}/en-ca/product/{sku}"
+            url = f"{base_url}/en-ca/product/{sku}" if sku else "#"
 
         better_cpu = specs['cpu_gen'] > current_specs['cpu_gen']
         better_ram = specs['ram'] > current_specs['ram']
@@ -487,6 +509,7 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
             'score': score,
             'url': url,
             'sku': sku,
+            'source': p.get('source', ''),  # Store name from Google Shopping
             'is_upgrade': better_cpu or better_ram
         }
 
@@ -494,7 +517,7 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
             deals.append(deal)
 
     deals.sort(key=lambda x: (-x['score'], x['price']))
-    return deals
+    return deals, skipped_incomplete
 
 
 def generate_santa_wishlist(deals, current_specs, top_n=3):
@@ -822,19 +845,24 @@ with tab2:
             if error:
                 st.error(error)
             elif products:
-                search_deals = analyze_deals(products, search_specs, search_show_all, "US")
+                search_deals, skipped = analyze_deals(products, search_specs, search_show_all, "US")
 
                 st.session_state['search_deals'] = search_deals
                 st.session_state['search_specs'] = search_specs
                 st.session_state['search_count'] = len(products)
+                st.session_state['search_skipped'] = skipped
                 st.session_state['search_query_used'] = enhanced_query
 
     # Display search results
     if 'search_deals' in st.session_state and st.session_state['search_deals']:
         search_deals = st.session_state['search_deals']
         search_specs = st.session_state['search_specs']
+        skipped = st.session_state.get('search_skipped', 0)
 
-        st.success(f"🇺🇸 Found {st.session_state.get('search_count', 0)} products from Google Shopping!")
+        msg = f"🇺🇸 Found {len(search_deals)} laptops with specs"
+        if skipped > 0:
+            msg += f" ({skipped} listings filtered - missing specs)"
+        st.success(msg)
 
         if not search_deals:
             st.warning("No upgrades found. Try 'Show all products' or adjust your specs.")
@@ -928,7 +956,8 @@ with tab2:
                         'resolution': current_resolution
                     }
 
-                    deals = analyze_deals(products, current_specs, show_all, country)
+                    # For HTML uploads (Canada), don't filter incomplete since data is more reliable
+                    deals, skipped = analyze_deals(products, current_specs, show_all, country, filter_incomplete=False)
 
                     # Store in session state
                     st.session_state['deals'] = deals
