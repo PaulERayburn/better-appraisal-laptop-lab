@@ -1079,14 +1079,25 @@ with tab2:
             st.header("🎄 Create Your Santa Wishlist")
             num_items_search = st.slider("How many items?", 1, min(5, len(search_deals)), 3, key="search_wishlist_num")
             wishlist_html_search = generate_santa_wishlist(search_deals, current_specs_display, num_items_search)
-            st.download_button(
-                label="🎅 Download Santa Wishlist",
-                data=wishlist_html_search,
-                file_name="santa_wishlist_us.html",
-                mime="text/html",
-                type="primary",
-                key="search_wishlist_btn"
-            )
+
+            # Preview and download buttons side by side
+            col_preview, col_download = st.columns(2)
+            with col_preview:
+                if st.button("👀 Preview Wishlist", key="search_preview_btn"):
+                    st.session_state['show_search_preview'] = True
+            with col_download:
+                st.download_button(
+                    label="🎅 Download Santa Wishlist",
+                    data=wishlist_html_search,
+                    file_name="santa_wishlist_us.html",
+                    mime="text/html",
+                    type="primary",
+                    key="search_wishlist_btn"
+                )
+
+            # Show preview if requested
+            if st.session_state.get('show_search_preview', False):
+                st.components.v1.html(wishlist_html_search, height=600, scrolling=True)
 
             # All deals
             st.markdown("---")
@@ -1199,18 +1210,23 @@ with tab1:
                 # Generate wishlist HTML
                 wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
 
-                # Download button (doesn't cause rerun issues)
-                st.download_button(
-                    label="🎅 Download Santa Wishlist",
-                    data=wishlist_html,
-                    file_name="santa_wishlist.html",
-                    mime="text/html",
-                    type="primary",
-                    key="upload_wishlist_btn"
-                )
+                # Preview and download buttons side by side
+                col_preview, col_download = st.columns(2)
+                with col_preview:
+                    if st.button("👀 Preview Wishlist", key="upload_preview_btn"):
+                        st.session_state['show_upload_preview'] = True
+                with col_download:
+                    st.download_button(
+                        label="🎅 Download Santa Wishlist",
+                        data=wishlist_html,
+                        file_name="santa_wishlist.html",
+                        mime="text/html",
+                        type="primary",
+                        key="upload_wishlist_btn"
+                    )
 
-                # Preview in expander
-                with st.expander("👀 Preview Wishlist"):
+                # Show preview if requested
+                if st.session_state.get('show_upload_preview', False):
                     st.components.v1.html(wishlist_html, height=600, scrolling=True)
 
                 # ALL DEALS TABLE
