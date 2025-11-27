@@ -997,6 +997,7 @@ with tab1:
         st.markdown("**New here?** Try the demo first!")
         if st.button("🎮 Try Demo Data", key="demo_btn", help="Load sample Best Buy Canada data to test the app"):
             st.session_state['use_demo'] = True
+            st.rerun()
 
         st.markdown("---")
         st.markdown("**Or upload your own:**")
