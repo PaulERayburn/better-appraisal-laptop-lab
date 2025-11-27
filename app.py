@@ -995,7 +995,8 @@ with tab1:
 
         # Demo option for new users
         st.markdown("**New here?** Try the demo first!")
-        use_demo = st.button("🎮 Try Demo Data", key="demo_btn", help="Load sample Best Buy Canada data to test the app")
+        if st.button("🎮 Try Demo Data", key="demo_btn", help="Load sample Best Buy Canada data to test the app"):
+            st.session_state['use_demo'] = True
 
         st.markdown("---")
         st.markdown("**Or upload your own:**")
@@ -1192,7 +1193,7 @@ with tab2:
 # Process uploaded file or demo (MUST be in tab1 scope)
 with tab1:
     # Handle demo button
-    if use_demo:
+    if st.session_state.get('use_demo', False):
         products = get_demo_products()
         country = "CA"
         current_specs = {
@@ -1211,6 +1212,7 @@ with tab1:
         st.session_state['product_count'] = len(products)
         st.session_state['country'] = country
         st.session_state['is_demo'] = True
+        st.session_state['use_demo'] = False  # Reset so it doesn't keep reloading
 
     if uploaded_file is not None:
         # Analyze button
