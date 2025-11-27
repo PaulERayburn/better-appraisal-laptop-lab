@@ -195,6 +195,206 @@ def analyze_deals(products, current_specs, show_all=False):
     return deals
 
 
+def generate_santa_wishlist(deals, current_specs, top_n=3):
+    """Generate the festive Christmas wishlist HTML."""
+    top_deals = deals[:top_n]
+
+    # Generate items HTML
+    items_html = ""
+    titles = ["The 'Best Value' Upgrade", "The 'Ultimate Power' Beast", "The Premium Choice"]
+    descriptions = [
+        "This is a great balance of performance and price!",
+        "If you're feeling extra generous, this one is top-tier!",
+        "A solid choice with excellent specs!"
+    ]
+
+    for i, deal in enumerate(top_deals):
+        title = titles[i] if i < len(titles) else f"Great Option #{i+1}"
+        desc = descriptions[i] if i < len(descriptions) else "Another excellent upgrade option!"
+
+        savings_html = ""
+        if deal['saving'] > 0:
+            savings_html = f'<div class="savings">Save ~${deal["saving"]:.0f}!</div>'
+
+        # Build comparison text
+        comparisons = []
+        if deal['specs']['ram'] > current_specs['ram']:
+            ratio = deal['specs']['ram'] / current_specs['ram']
+            if ratio >= 4:
+                comparisons.append(f"{deal['specs']['ram']}GB (Quadruple my current!)")
+            elif ratio >= 2:
+                comparisons.append(f"{deal['specs']['ram']}GB (Double my current!)")
+            else:
+                comparisons.append(f"{deal['specs']['ram']}GB (More than mine!)")
+
+        specs_html = ""
+        if deal['specs']['cpu_gen'] > 0:
+            specs_html += f"<li><strong>CPU:</strong> {deal['specs']['cpu_model']} ({deal['specs']['cpu_gen']}th Gen)</li>\n"
+        if deal['specs']['ram'] > 0:
+            ram_note = ""
+            if deal['specs']['ram'] > current_specs['ram']:
+                ratio = deal['specs']['ram'] / current_specs['ram']
+                if ratio >= 4:
+                    ram_note = " (Quadruple my current!)"
+                elif ratio >= 2:
+                    ram_note = " (Double my current!)"
+                else:
+                    ram_note = " (More than mine!)"
+            specs_html += f"<li><strong>RAM:</strong> {deal['specs']['ram']}GB{ram_note}</li>\n"
+        if deal['specs']['storage'] > 0:
+            storage_note = ""
+            if deal['specs']['storage'] > current_specs['storage']:
+                storage_note = " (More than my current!)"
+            specs_html += f"<li><strong>Storage:</strong> {deal['specs']['storage']}GB SSD{storage_note}</li>\n"
+        if deal['specs']['gpu'] != 'Integrated':
+            specs_html += f"<li><strong>GPU:</strong> {deal['specs']['gpu']}</li>\n"
+
+        items_html += f'''
+    <div class="item">
+        <h2>{i+1}. {title}</h2>
+        <p><strong>{deal['name'][:60]}{'...' if len(deal['name']) > 60 else ''}</strong></p>
+        <p>{desc}</p>
+        <ul class="specs">
+            {specs_html}
+        </ul>
+        <div class="price-tag">${deal['price']:,.2f}</div>
+        {savings_html}
+        <a href="{deal['url']}" class="btn" target="_blank">View for Santa</a>
+    </div>
+'''
+
+    html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Christmas Laptop Wishlist</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #b3000c;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }}
+        .container {{
+            background-color: #fff;
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            border: 5px solid #228b22;
+            position: relative;
+        }}
+        .container::before {{
+            content: "❄️";
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 30px;
+        }}
+        .container::after {{
+            content: "❄️";
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 30px;
+        }}
+        h1 {{
+            text-align: center;
+            color: #b3000c;
+            font-family: 'Georgia', serif;
+            margin-bottom: 10px;
+        }}
+        p.intro {{
+            text-align: center;
+            font-size: 1.1em;
+            color: #555;
+            margin-bottom: 30px;
+        }}
+        .item {{
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            padding: 20px;
+            background-color: #f9f9f9;
+            transition: transform 0.2s;
+        }}
+        .item:hover {{
+            transform: scale(1.02);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }}
+        .item h2 {{
+            margin-top: 0;
+            color: #228b22;
+        }}
+        .specs {{
+            list-style-type: none;
+            padding: 0;
+            margin: 10px 0;
+        }}
+        .specs li {{
+            margin-bottom: 5px;
+            padding-left: 20px;
+            position: relative;
+        }}
+        .specs li::before {{
+            content: "🎁";
+            position: absolute;
+            left: 0;
+        }}
+        .price-tag {{
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #b3000c;
+            margin-top: 10px;
+        }}
+        .savings {{
+            font-size: 0.9em;
+            color: #2e8b57;
+            font-weight: bold;
+        }}
+        .btn {{
+            display: inline-block;
+            margin-top: 15px;
+            padding: 10px 20px;
+            background-color: #b3000c;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }}
+        .btn:hover {{
+            background-color: #8b0000;
+        }}
+        .footer {{
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #777;
+        }}
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🎄 Dear Santa 🎄</h1>
+    <p class="intro">I've been very good this year (and my current laptop is getting old).<br>Here are the best deals I found that would be a perfect upgrade!</p>
+    {items_html}
+    <div class="footer">
+        <p>Milk and cookies will be waiting! 🥛🍪</p>
+    </div>
+</div>
+
+</body>
+</html>
+'''
+    return html_content
+
+
 # Main App
 st.title("💻 Best Buy Deal Finder")
 st.markdown("*Find laptop upgrade deals from Best Buy Canada*")
@@ -249,6 +449,7 @@ if uploaded_file is not None:
             try:
                 content = uploaded_file.read().decode('utf-8')
             except UnicodeDecodeError:
+                uploaded_file.seek(0)
                 content = uploaded_file.read().decode('latin-1')
 
             products, error = extract_products_from_html(content)
@@ -269,24 +470,50 @@ if uploaded_file is not None:
                 if not deals:
                     st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
                 else:
-                    # Best Deal Highlight
-                    best = deals[0]
+                    # Store deals in session state for wishlist generation
+                    st.session_state['deals'] = deals
+                    st.session_state['current_specs'] = current_specs
+
+                    # TOP 3 DEALS SECTION
                     st.markdown("---")
-                    st.header("🏆 Best Upgrade Deal")
+                    st.header("🏆 Top 3 Best Deals")
 
-                    col_a, col_b = st.columns([3, 1])
-                    with col_a:
-                        st.markdown(f"### [{best['name'][:80]}...]({best['url']})")
-                        st.markdown(f"**CPU:** {best['specs']['cpu_model']} (Gen {best['specs']['cpu_gen']}) | "
-                                   f"**RAM:** {best['specs']['ram']}GB | "
-                                   f"**Storage:** {best['specs']['storage']}GB | "
-                                   f"**GPU:** {best['specs']['gpu']}")
-                    with col_b:
-                        st.metric("Price", f"${best['price']:,.2f}")
-                        if best['saving'] > 0:
-                            st.metric("You Save", f"${best['saving']:.0f}")
+                    top_3 = deals[:3]
+                    cols = st.columns(len(top_3))
 
-                    # All Deals Table
+                    medals = ["🥇", "🥈", "🥉"]
+
+                    for i, (col, deal) in enumerate(zip(cols, top_3)):
+                        with col:
+                            st.markdown(f"### {medals[i]} #{i+1}")
+                            st.markdown(f"**{deal['name'][:50]}...**")
+                            st.markdown(f"💰 **${deal['price']:,.2f}**")
+                            if deal['saving'] > 0:
+                                st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
+                            st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
+                            st.link_button("View Deal", deal['url'])
+
+                    # SANTA WISHLIST SECTION
+                    st.markdown("---")
+                    st.header("🎄 Create Your Santa Wishlist")
+                    st.markdown("Generate a festive wishlist to share with family (or Santa)!")
+
+                    num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3)
+
+                    if st.button("🎅 Generate Santa Wishlist", type="secondary"):
+                        wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
+
+                        st.download_button(
+                            label="📥 Download Wishlist HTML",
+                            data=wishlist_html,
+                            file_name="santa_wishlist.html",
+                            mime="text/html"
+                        )
+
+                        st.markdown("#### Preview:")
+                        st.components.v1.html(wishlist_html, height=600, scrolling=True)
+
+                    # ALL DEALS TABLE
                     st.markdown("---")
                     st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
 
@@ -316,6 +543,7 @@ else:
         2. **Extracting** specs (CPU, RAM, Storage, GPU) from product names
         3. **Comparing** each laptop against your current computer
         4. **Ranking** deals by upgrade value and price
+        5. **Creating** a festive wishlist to share with Santa! 🎅
 
         **No accounts needed. No data stored. Everything runs in your browser!**
         """)
