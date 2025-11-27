@@ -434,6 +434,68 @@ def search_google_shopping(query, max_results=40, specs=None):
         return None, "Invalid response from search API."
 
 
+def get_demo_products():
+    """Return sample Best Buy Canada product data for demo purposes."""
+    return [
+        {
+            'name': 'Acer Nitro V 15.6" Gaming Laptop - Black (Intel Core i7-13620H/16GB RAM/512GB SSD/GeForce RTX 4050) - Open Box',
+            'sku': '17976740',
+            'seoUrl': '/en-ca/product/17976740',
+            'priceWithoutEhf': 899.99,
+            'saving': 400,
+        },
+        {
+            'name': 'ASUS ROG Strix G16 16" Gaming Laptop (Intel Core i7-13650HX/16GB RAM/1TB SSD/GeForce RTX 4060)',
+            'sku': '17542889',
+            'seoUrl': '/en-ca/product/17542889',
+            'priceWithoutEhf': 1599.99,
+            'saving': 200,
+        },
+        {
+            'name': 'Lenovo LOQ 15.6" Gaming Laptop - Grey (Intel Core i7-13620H/32GB RAM/512GB SSD/GeForce RTX 4060)',
+            'sku': '17654321',
+            'seoUrl': '/en-ca/product/17654321',
+            'priceWithoutEhf': 1299.99,
+            'saving': 300,
+        },
+        {
+            'name': 'HP Victus 15.6" FHD Gaming Laptop (AMD Ryzen 7 7840HS/16GB RAM/512GB SSD/GeForce RTX 4060)',
+            'sku': '17789012',
+            'seoUrl': '/en-ca/product/17789012',
+            'priceWithoutEhf': 1199.99,
+            'saving': 150,
+        },
+        {
+            'name': 'MSI Thin 15 15.6" FHD Gaming Laptop (Intel Core i5-12450H/8GB RAM/512GB SSD/GeForce RTX 4050)',
+            'sku': '17890123',
+            'seoUrl': '/en-ca/product/17890123',
+            'priceWithoutEhf': 799.99,
+            'saving': 100,
+        },
+        {
+            'name': 'ASUS TUF Gaming A16 16" QHD Gaming Laptop (AMD Ryzen 9 7940HS/32GB RAM/1TB SSD/GeForce RTX 4070)',
+            'sku': '17901234',
+            'seoUrl': '/en-ca/product/17901234',
+            'priceWithoutEhf': 1999.99,
+            'saving': 500,
+        },
+        {
+            'name': 'Acer Predator Helios Neo 16" Gaming Laptop (Intel Core i7-14700HX/16GB RAM/1TB SSD/GeForce RTX 4070)',
+            'sku': '18012345',
+            'seoUrl': '/en-ca/product/18012345',
+            'priceWithoutEhf': 1899.99,
+            'saving': 400,
+        },
+        {
+            'name': 'Dell G15 15.6" FHD Gaming Laptop (Intel Core i7-13650HX/16GB RAM/512GB SSD/GeForce RTX 4050)',
+            'sku': '17123456',
+            'seoUrl': '/en-ca/product/17123456',
+            'priceWithoutEhf': 999.99,
+            'saving': 200,
+        },
+    ]
+
+
 def analyze_deals(products, current_specs, show_all=False, country="CA", filter_incomplete=True):
     """Analyze products and compare against current specs."""
     if country == "US":
@@ -927,6 +989,13 @@ with tab1:
 
     with col1:
         st.header("📁 Upload Your Saved Page")
+
+        # Demo option for new users
+        st.markdown("**New here?** Try the demo first!")
+        use_demo = st.button("🎮 Try Demo Data", key="demo_btn", help="Load sample Best Buy Canada data to test the app")
+
+        st.markdown("---")
+        st.markdown("**Or upload your own:**")
         uploaded_file = st.file_uploader(
             "Choose the saved HTML file",
             type=['html', 'htm'],
@@ -1117,8 +1186,29 @@ with tab2:
                         st.markdown(f"**Screen:** {deal['specs']['screen_size']}\" {deal['specs']['resolution']}")
                     st.link_button("🔗 View Deal", deal['url'])
 
-# Process uploaded file (MUST be in tab1 scope)
+# Process uploaded file or demo (MUST be in tab1 scope)
 with tab1:
+    # Handle demo button
+    if use_demo:
+        products = get_demo_products()
+        country = "CA"
+        current_specs = {
+            'cpu_gen': current_cpu_gen,
+            'ram': current_ram,
+            'storage': current_storage,
+            'screen_size': current_screen_size,
+            'resolution': current_resolution
+        }
+
+        deals, skipped = analyze_deals(products, current_specs, show_all, country, filter_incomplete=False)
+
+        st.session_state['deals'] = deals
+        st.session_state['current_specs'] = current_specs
+        st.session_state['analyzed'] = True
+        st.session_state['product_count'] = len(products)
+        st.session_state['country'] = country
+        st.session_state['is_demo'] = True
+
     if uploaded_file is not None:
         # Analyze button
         if st.button("🔍 Analyze Deals", type="primary", key="upload_analyze"):
@@ -1152,18 +1242,25 @@ with tab1:
                     st.session_state['analyzed'] = True
                     st.session_state['product_count'] = len(products)
                     st.session_state['country'] = country
+                    st.session_state['is_demo'] = False  # Clear demo flag for real uploads
 
         # Display results if we have analyzed data
         if st.session_state['analyzed'] and st.session_state['deals'] is not None:
             deals = st.session_state['deals']
             current_specs = st.session_state['current_specs']
             country = st.session_state.get('country', 'CA')
+            is_demo = st.session_state.get('is_demo', False)
 
             country_flag = "🇺🇸" if country == "US" else "🇨🇦"
             country_name = "US" if country == "US" else "Canada"
-            st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
 
-            if country == "US":
+            if is_demo:
+                st.success(f"🎮 **Demo Mode:** Showing {st.session_state.get('product_count', 0)} sample products")
+                st.info("This is sample data to help you explore the app. Upload your own Best Buy HTML file for real deals!")
+            else:
+                st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
+
+            if country == "US" and not is_demo:
                 st.warning("⚠️ **US Support is Experimental:** Best Buy US uses dynamic loading, so only some products may be captured. For best results, use Best Buy Canada.")
 
             if not deals:
