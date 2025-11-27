@@ -38,6 +38,7 @@ desktop.ini
 
 # Personal notes
 *.txt
+!requirements.txt
 
 # Build artifacts
 dist/

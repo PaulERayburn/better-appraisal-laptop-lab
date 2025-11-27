@@ -8,6 +8,8 @@ Upload a saved HTML file and compare against your current specs.
 import streamlit as st
 import json
 import re
+import requests
+from bs4 import BeautifulSoup
 
 # Page config
 st.set_page_config(
@@ -56,13 +58,15 @@ def extract_condition(name):
 
 
 def extract_specs(name):
-    """Extract CPU, RAM, Storage, and GPU specs from a product name string."""
+    """Extract CPU, RAM, Storage, GPU, screen size, and resolution from a product name string."""
     specs = {
         'cpu_gen': 0,
         'cpu_model': 'Unknown',
         'ram': 0,
         'storage': 0,
-        'gpu': 'Integrated'
+        'gpu': 'Integrated',
+        'screen_size': 0,
+        'resolution': 'Unknown'
     }
 
     # Intel Core iX-XXXXX (e.g., i7-13620H, i5-12450H)
@@ -116,6 +120,46 @@ def extract_specs(name):
     gpu_match = re.search(r'(RTX\s*\d{4}(?:\s*Ti)?|GTX\s*\d{4})', name, re.IGNORECASE)
     if gpu_match:
         specs['gpu'] = gpu_match.group(1).upper().replace(" ", " ")
+
+    # Screen size (e.g., 15.6", 14", 17.3")
+    screen_patterns = [
+        r'(\d{1,2}(?:\.\d)?)["\u201d\u2033]\s*(?:FHD|QHD|UHD|HD|OLED|IPS|LED)?',  # 15.6" FHD
+        r'(\d{1,2}(?:\.\d)?)\s*(?:inch|in)\b',  # 15.6 inch
+        r'(\d{1,2}(?:\.\d)?)\s*(?:FHD|QHD|UHD|HD|OLED)',  # 15.6 FHD (no quote)
+    ]
+    for pattern in screen_patterns:
+        screen_match = re.search(pattern, name, re.IGNORECASE)
+        if screen_match:
+            size = float(screen_match.group(1))
+            if 10 <= size <= 20:  # Valid laptop screen sizes
+                specs['screen_size'] = size
+                break
+
+    # Resolution (FHD, QHD, UHD/4K, HD, etc.)
+    resolution_map = {
+        r'\b4K\b': '4K UHD',
+        r'\bUHD\b': '4K UHD',
+        r'\bQHD\+': 'QHD+',
+        r'\bQHD\b': 'QHD',
+        r'\bWQXGA\b': 'WQXGA',
+        r'\bFHD\+': 'FHD+',
+        r'\bFHD\b': 'FHD',
+        r'\b1080p\b': 'FHD',
+        r'\b1440p\b': 'QHD',
+        r'\b2160p\b': '4K UHD',
+        r'\bHD\+': 'HD+',
+        r'\bHD\b': 'HD',
+        r'\bOLED\b': 'OLED',  # Often indicates premium display
+    }
+    for pattern, resolution in resolution_map.items():
+        if re.search(pattern, name, re.IGNORECASE):
+            # Special case: if we find OLED, check if there's also a resolution
+            if resolution == 'OLED':
+                specs['resolution'] = 'OLED'
+                # Keep looking for actual resolution
+                continue
+            specs['resolution'] = resolution
+            break
 
     return specs
 
@@ -230,6 +274,100 @@ def extract_us_products(content):
     return products if products else None
 
 
+def search_bestbuy_us(query, max_results=24):
+    """
+    Search Best Buy US using their website and BeautifulSoup.
+    Note: This is experimental and may break if Best Buy changes their site structure.
+    """
+    products = []
+
+    # Best Buy US search URL
+    search_url = f"https://www.bestbuy.com/site/searchpage.jsp?st={query.replace(' ', '+')}"
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+
+    try:
+        response = requests.get(search_url, headers=headers, timeout=15)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Try to extract embedded JSON data first
+        scripts = soup.find_all('script')
+        for script in scripts:
+            if script.string and '__INITIAL_STATE__' in script.string:
+                match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', script.string, re.DOTALL)
+                if match:
+                    try:
+                        data = json.loads(match.group(1))
+                        # Navigate to products in the JSON structure
+                        if 'search' in data and 'searchResult' in data['search']:
+                            results = data['search']['searchResult'].get('products', [])
+                            for p in results[:max_results]:
+                                products.append({
+                                    'name': p.get('names', {}).get('short', p.get('name', '')),
+                                    'sku': p.get('sku', ''),
+                                    'price': p.get('priceWithoutEhf', p.get('regularPrice', 0)),
+                                    'saving': p.get('priceDiff', 0),
+                                    'seoUrl': p.get('url', ''),
+                                    'country': 'US'
+                                })
+                            return products, None
+                    except json.JSONDecodeError:
+                        pass
+
+        # Fallback: parse HTML structure directly
+        product_items = soup.select('.sku-item')
+
+        for item in product_items[:max_results]:
+            try:
+                name_elem = item.select_one('.sku-title a')
+                price_elem = item.select_one('.priceView-customer-price span')
+                sku_elem = item.get('data-sku-id', '')
+
+                if name_elem and price_elem:
+                    name = name_elem.get_text(strip=True)
+                    price_text = price_elem.get_text(strip=True).replace('$', '').replace(',', '')
+                    try:
+                        price = float(price_text)
+                    except ValueError:
+                        price = 0
+
+                    # Try to get savings
+                    saving = 0
+                    savings_elem = item.select_one('.pricing-price__savings')
+                    if savings_elem:
+                        savings_text = savings_elem.get_text(strip=True)
+                        savings_match = re.search(r'Save\s*\$?([\d,]+)', savings_text)
+                        if savings_match:
+                            saving = float(savings_match.group(1).replace(',', ''))
+
+                    products.append({
+                        'name': name,
+                        'sku': sku_elem,
+                        'price': price,
+                        'saving': saving,
+                        'seoUrl': name_elem.get('href', ''),
+                        'country': 'US'
+                    })
+            except Exception:
+                continue
+
+        if products:
+            return products, None
+        else:
+            return None, "No products found. Best Buy may have blocked the request or changed their page structure."
+
+    except requests.exceptions.Timeout:
+        return None, "Request timed out. Try again later."
+    except requests.exceptions.RequestException as e:
+        return None, f"Failed to fetch search results: {str(e)}"
+
+
 def analyze_deals(products, current_specs, show_all=False, country="CA"):
     """Analyze products and compare against current specs."""
     if country == "US":
@@ -265,6 +403,15 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
         better_ram = specs['ram'] > current_specs['ram']
         better_storage = specs['storage'] >= current_specs['storage']
 
+        # Screen size comparison
+        bigger_screen = specs['screen_size'] > current_specs.get('screen_size', 0) if specs['screen_size'] > 0 else False
+
+        # Resolution comparison (rank: HD < HD+ < FHD < FHD+ < QHD < QHD+ < 4K UHD)
+        resolution_rank = {"HD": 1, "HD+": 2, "FHD": 3, "FHD+": 4, "QHD": 5, "WQXGA": 5, "QHD+": 6, "4K UHD": 7, "OLED": 4, "Unknown": 0}
+        current_res_rank = resolution_rank.get(current_specs.get('resolution', 'FHD'), 3)
+        product_res_rank = resolution_rank.get(specs['resolution'], 0)
+        better_resolution = product_res_rank > current_res_rank if product_res_rank > 0 else False
+
         notes = []
         if better_cpu:
             notes.append(f"CPU+ (Gen {specs['cpu_gen']})")
@@ -274,6 +421,10 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
             notes.append(f"Storage+ ({specs['storage']}GB)")
         elif specs['storage'] > 0 and specs['storage'] < current_specs['storage']:
             notes.append(f"Storage- ({specs['storage']}GB)")
+        if bigger_screen:
+            notes.append(f"Screen+ ({specs['screen_size']}\")")
+        if better_resolution:
+            notes.append(f"Res+ ({specs['resolution']})")
 
         score = 0
         if better_cpu:
@@ -281,6 +432,10 @@ def analyze_deals(products, current_specs, show_all=False, country="CA"):
         if better_ram:
             score += 2
         if better_storage:
+            score += 1
+        if bigger_screen:
+            score += 1
+        if better_resolution:
             score += 1
         if saving > 0:
             score += 1
@@ -361,6 +516,11 @@ def generate_santa_wishlist(deals, current_specs, top_n=3):
             specs_html += f"<li><strong>Storage:</strong> {deal['specs']['storage']}GB SSD{storage_note}</li>\n"
         if deal['specs']['gpu'] != 'Integrated':
             specs_html += f"<li><strong>GPU:</strong> {deal['specs']['gpu']}</li>\n"
+        if deal['specs']['screen_size'] > 0:
+            screen_text = f"{deal['specs']['screen_size']}\""
+            if deal['specs']['resolution'] != 'Unknown':
+                screen_text += f" {deal['specs']['resolution']}"
+            specs_html += f"<li><strong>Screen:</strong> {screen_text}</li>\n"
 
         # Add condition badge in title if not new
         condition_badge = f" ({condition})" if condition != 'New' else ""
@@ -537,31 +697,16 @@ with st.sidebar:
     """)
 
     st.markdown("---")
-    st.markdown("⚠️ **Note:** Best Buy US has limited support due to dynamic page loading. Best Buy Canada works best.")
+    st.markdown("⚠️ **Note:** Best Buy Canada works best. US support is experimental.")
+
+    st.markdown("---")
+    st.markdown("### 🔍 Live Search (US)")
+    st.markdown("Try the **Live Search** tab to search Best Buy US directly without saving a page!")
 
     st.markdown("---")
     st.markdown("Made with ❤️ | [GitHub](https://github.com/PaulERayburn/bestbuy-deal-finder)")
 
-# Main content
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.header("📁 Upload Your Saved Page")
-    uploaded_file = st.file_uploader(
-        "Choose the saved HTML file",
-        type=['html', 'htm'],
-        help="Upload the HTML file you saved from Best Buy (US or Canada)"
-    )
-
-with col2:
-    st.header("⚙️ Your Current Specs")
-    current_ram = st.number_input("RAM (GB)", min_value=1, max_value=128, value=16)
-    current_storage = st.number_input("Storage (GB)", min_value=64, max_value=8000, value=512)
-    current_cpu_gen = st.number_input("CPU Generation", min_value=1, max_value=20, value=10,
-                                       help="e.g., 10 for Intel 10th gen i7-10750H")
-    show_all = st.checkbox("Show all products (not just upgrades)")
-
-# Initialize session state
+# Initialize session state (must be before tabs)
 if 'deals' not in st.session_state:
     st.session_state['deals'] = None
 if 'current_specs' not in st.session_state:
@@ -569,67 +714,97 @@ if 'current_specs' not in st.session_state:
 if 'analyzed' not in st.session_state:
     st.session_state['analyzed'] = False
 
-# Process
-if uploaded_file is not None:
-    # Analyze button
-    if st.button("🔍 Analyze Deals", type="primary"):
-        with st.spinner("Analyzing products..."):
-            try:
-                content = uploaded_file.read().decode('utf-8')
-            except UnicodeDecodeError:
-                uploaded_file.seek(0)
-                content = uploaded_file.read().decode('latin-1')
+# Main content - Tabs for different input methods
+tab1, tab2 = st.tabs(["📁 Upload HTML File", "🔍 Live Search (US - Experimental)"])
 
-            products, error, country = extract_products_from_html(content)
+with tab1:
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.header("📁 Upload Your Saved Page")
+        uploaded_file = st.file_uploader(
+            "Choose the saved HTML file",
+            type=['html', 'htm'],
+            help="Upload the HTML file you saved from Best Buy (US or Canada)"
+        )
+
+    with col2:
+        st.header("⚙️ Your Current Specs")
+        current_ram = st.number_input("RAM (GB)", min_value=1, max_value=128, value=16, key="upload_ram")
+        current_storage = st.number_input("Storage (GB)", min_value=64, max_value=8000, value=512, key="upload_storage")
+        current_cpu_gen = st.number_input("CPU Generation", min_value=1, max_value=20, value=10,
+                                           help="e.g., 10 for Intel 10th gen i7-10750H", key="upload_cpu")
+        current_screen_size = st.number_input("Screen Size (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1,
+                                              help="e.g., 15.6 for a 15.6\" display", key="upload_screen")
+        current_resolution = st.selectbox("Screen Resolution",
+                                          options=["HD", "HD+", "FHD", "FHD+", "QHD", "QHD+", "4K UHD"],
+                                          index=2,  # Default to FHD
+                                          help="HD=1366x768, FHD=1920x1080, QHD=2560x1440, 4K=3840x2160", key="upload_res")
+        show_all = st.checkbox("Show all products (not just upgrades)", key="upload_show_all")
+
+with tab2:
+    st.header("🔍 Live Search Best Buy US")
+    st.warning("⚠️ **Experimental Feature:** This searches Best Buy US directly. Results may be limited due to anti-bot measures.")
+
+    search_col1, search_col2 = st.columns([2, 1])
+
+    with search_col1:
+        search_query = st.text_input("Search for laptops", value="gaming laptop", placeholder="e.g., gaming laptop RTX 4060")
+        search_button = st.button("🔍 Search Best Buy US", type="primary")
+
+    with search_col2:
+        st.subheader("⚙️ Your Current Specs")
+        search_ram = st.number_input("RAM (GB)", min_value=1, max_value=128, value=16, key="search_ram")
+        search_storage = st.number_input("Storage (GB)", min_value=64, max_value=8000, value=512, key="search_storage")
+        search_cpu_gen = st.number_input("CPU Generation", min_value=1, max_value=20, value=10, key="search_cpu")
+        search_screen_size = st.number_input("Screen Size (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1, key="search_screen")
+        search_resolution = st.selectbox("Screen Resolution",
+                                         options=["HD", "HD+", "FHD", "FHD+", "QHD", "QHD+", "4K UHD"],
+                                         index=2, key="search_res")
+        search_show_all = st.checkbox("Show all products (not just upgrades)", key="search_show_all")
+
+    # Handle live search
+    if search_button:
+        with st.spinner(f"Searching Best Buy US for '{search_query}'..."):
+            products, error = search_bestbuy_us(search_query)
 
             if error:
                 st.error(error)
-                st.session_state['analyzed'] = False
-            else:
-                current_specs = {
-                    'cpu_gen': current_cpu_gen,
-                    'ram': current_ram,
-                    'storage': current_storage
+            elif products:
+                search_specs = {
+                    'cpu_gen': search_cpu_gen,
+                    'ram': search_ram,
+                    'storage': search_storage,
+                    'screen_size': search_screen_size,
+                    'resolution': search_resolution
                 }
+                search_deals = analyze_deals(products, search_specs, search_show_all, "US")
 
-                deals = analyze_deals(products, current_specs, show_all, country)
+                st.session_state['search_deals'] = search_deals
+                st.session_state['search_specs'] = search_specs
+                st.session_state['search_count'] = len(products)
 
-                # Store in session state
-                st.session_state['deals'] = deals
-                st.session_state['current_specs'] = current_specs
-                st.session_state['analyzed'] = True
-                st.session_state['product_count'] = len(products)
-                st.session_state['country'] = country
+    # Display search results
+    if 'search_deals' in st.session_state and st.session_state['search_deals']:
+        search_deals = st.session_state['search_deals']
+        search_specs = st.session_state['search_specs']
 
-    # Display results if we have analyzed data
-    if st.session_state['analyzed'] and st.session_state['deals'] is not None:
-        deals = st.session_state['deals']
-        current_specs = st.session_state['current_specs']
-        country = st.session_state.get('country', 'CA')
+        st.success(f"🇺🇸 Found {st.session_state.get('search_count', 0)} products from Best Buy US!")
 
-        country_flag = "🇺🇸" if country == "US" else "🇨🇦"
-        country_name = "US" if country == "US" else "Canada"
-        st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
-
-        if country == "US":
-            st.warning("⚠️ **US Support is Experimental:** Best Buy US uses dynamic loading, so only some products may be captured. For best results, use Best Buy Canada.")
-
-        if not deals:
-            st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
+        if not search_deals:
+            st.warning("No upgrades found. Try 'Show all products' or adjust your specs.")
         else:
-            # TOP 3 DEALS SECTION
+            # Top 3 deals
             st.markdown("---")
             st.header("🏆 Top 3 Best Deals")
 
-            top_3 = deals[:3]
+            top_3 = search_deals[:3]
             cols = st.columns(len(top_3))
-
             medals = ["🥇", "🥈", "🥉"]
 
             for i, (col, deal) in enumerate(zip(cols, top_3)):
                 with col:
                     st.markdown(f"### {medals[i]} #{i+1}")
-                    # Show condition badge if not New
                     condition = deal.get('condition', 'New')
                     if condition != 'New':
                         st.markdown(f"🏷️ **{condition}**")
@@ -638,66 +813,188 @@ if uploaded_file is not None:
                     if deal['saving'] > 0:
                         st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
                     st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
+                    screen_info = []
+                    if deal['specs']['screen_size'] > 0:
+                        screen_info.append(f"{deal['specs']['screen_size']}\"")
+                    if deal['specs']['resolution'] != 'Unknown':
+                        screen_info.append(deal['specs']['resolution'])
+                    if screen_info:
+                        st.markdown(f"🖥️ {' '.join(screen_info)}")
                     st.link_button("View Deal", deal['url'])
 
-            # SANTA WISHLIST SECTION
+            # Santa wishlist for search results
             st.markdown("---")
             st.header("🎄 Create Your Santa Wishlist")
-            st.markdown("Generate a festive wishlist to share with family (or Santa)!")
-
-            num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3)
-
-            # Generate wishlist HTML
-            wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
-
-            # Download button (doesn't cause rerun issues)
+            num_items_search = st.slider("How many items?", 1, min(5, len(search_deals)), 3, key="search_wishlist_num")
+            wishlist_html_search = generate_santa_wishlist(search_deals, search_specs, num_items_search)
             st.download_button(
                 label="🎅 Download Santa Wishlist",
-                data=wishlist_html,
-                file_name="santa_wishlist.html",
+                data=wishlist_html_search,
+                file_name="santa_wishlist_us.html",
                 mime="text/html",
-                type="primary"
+                type="primary",
+                key="search_wishlist_btn"
             )
 
-            # Preview in expander
-            with st.expander("👀 Preview Wishlist"):
-                st.components.v1.html(wishlist_html, height=600, scrolling=True)
-
-            # ALL DEALS TABLE
+            # All deals
             st.markdown("---")
-            st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
-
-            for i, deal in enumerate(deals):
+            st.header(f"📊 All Results ({len(search_deals)})")
+            for i, deal in enumerate(search_deals):
                 condition = deal.get('condition', 'New')
                 condition_badge = "" if condition == "New" else f" [{condition}]"
-                with st.expander(f"**{i+1}. {deal['name'][:65]}...**{condition_badge} — ${deal['price']:,.2f}" +
-                                (f" (Save ${deal['saving']:.0f})" if deal['saving'] > 0 else "")):
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
+                with st.expander(f"**{i+1}. {deal['name'][:65]}...**{condition_badge} — ${deal['price']:,.2f}"):
+                    st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
+                    st.markdown(f"**RAM:** {deal['specs']['ram']}GB | **Storage:** {deal['specs']['storage']}GB")
+                    st.markdown(f"**GPU:** {deal['specs']['gpu']}")
+                    if deal['specs']['screen_size'] > 0:
+                        st.markdown(f"**Screen:** {deal['specs']['screen_size']}\" {deal['specs']['resolution']}")
+                    st.link_button("🔗 View on Best Buy", deal['url'])
+
+    # Process uploaded file (tab1 content continues)
+    if uploaded_file is not None:
+        # Analyze button
+        if st.button("🔍 Analyze Deals", type="primary", key="upload_analyze"):
+            with st.spinner("Analyzing products..."):
+                try:
+                    content = uploaded_file.read().decode('utf-8')
+                except UnicodeDecodeError:
+                    uploaded_file.seek(0)
+                    content = uploaded_file.read().decode('latin-1')
+
+                products, error, country = extract_products_from_html(content)
+
+                if error:
+                    st.error(error)
+                    st.session_state['analyzed'] = False
+                else:
+                    current_specs = {
+                        'cpu_gen': current_cpu_gen,
+                        'ram': current_ram,
+                        'storage': current_storage,
+                        'screen_size': current_screen_size,
+                        'resolution': current_resolution
+                    }
+
+                    deals = analyze_deals(products, current_specs, show_all, country)
+
+                    # Store in session state
+                    st.session_state['deals'] = deals
+                    st.session_state['current_specs'] = current_specs
+                    st.session_state['analyzed'] = True
+                    st.session_state['product_count'] = len(products)
+                    st.session_state['country'] = country
+
+        # Display results if we have analyzed data
+        if st.session_state['analyzed'] and st.session_state['deals'] is not None:
+            deals = st.session_state['deals']
+            current_specs = st.session_state['current_specs']
+            country = st.session_state.get('country', 'CA')
+
+            country_flag = "🇺🇸" if country == "US" else "🇨🇦"
+            country_name = "US" if country == "US" else "Canada"
+            st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
+
+            if country == "US":
+                st.warning("⚠️ **US Support is Experimental:** Best Buy US uses dynamic loading, so only some products may be captured. For best results, use Best Buy Canada.")
+
+            if not deals:
+                st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
+            else:
+                # TOP 3 DEALS SECTION
+                st.markdown("---")
+                st.header("🏆 Top 3 Best Deals")
+
+                top_3 = deals[:3]
+                cols = st.columns(len(top_3))
+
+                medals = ["🥇", "🥈", "🥉"]
+
+                for i, (col, deal) in enumerate(zip(cols, top_3)):
+                    with col:
+                        st.markdown(f"### {medals[i]} #{i+1}")
+                        # Show condition badge if not New
+                        condition = deal.get('condition', 'New')
                         if condition != 'New':
-                            st.markdown(f"**Condition:** {condition}")
-                        st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
-                        st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
-                        st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
-                        st.markdown(f"**GPU:** {deal['specs']['gpu']}")
-                        if deal['notes']:
-                            st.markdown(f"**Upgrades:** {', '.join(deal['notes'])}")
-                    with col2:
-                        st.link_button("🔗 View on Best Buy", deal['url'])
+                            st.markdown(f"🏷️ **{condition}**")
+                        st.markdown(f"**{deal['name'][:50]}...**")
+                        st.markdown(f"💰 **${deal['price']:,.2f}**")
+                        if deal['saving'] > 0:
+                            st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
+                        st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
+                        # Screen info
+                        screen_info = []
+                        if deal['specs']['screen_size'] > 0:
+                            screen_info.append(f"{deal['specs']['screen_size']}\"")
+                        if deal['specs']['resolution'] != 'Unknown':
+                            screen_info.append(deal['specs']['resolution'])
+                        if screen_info:
+                            st.markdown(f"🖥️ {' '.join(screen_info)}")
+                        st.link_button("View Deal", deal['url'])
 
-else:
-    st.info("👆 Upload a saved Best Buy HTML file to get started!")
+                # SANTA WISHLIST SECTION
+                st.markdown("---")
+                st.header("🎄 Create Your Santa Wishlist")
+                st.markdown("Generate a festive wishlist to share with family (or Santa)!")
 
-    # Demo section
-    with st.expander("ℹ️ What does this tool do?"):
-        st.markdown("""
-        This tool helps you find the best laptop upgrade deals by:
+                num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3, key="upload_wishlist_num")
 
-        1. **Parsing** product data from a saved Best Buy Canada webpage
-        2. **Extracting** specs (CPU, RAM, Storage, GPU) from product names
-        3. **Comparing** each laptop against your current computer
-        4. **Ranking** deals by upgrade value and price
-        5. **Creating** a festive wishlist to share with Santa! 🎅
+                # Generate wishlist HTML
+                wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
 
-        **No accounts needed. No data stored. Everything runs in your browser!**
-        """)
+                # Download button (doesn't cause rerun issues)
+                st.download_button(
+                    label="🎅 Download Santa Wishlist",
+                    data=wishlist_html,
+                    file_name="santa_wishlist.html",
+                    mime="text/html",
+                    type="primary",
+                    key="upload_wishlist_btn"
+                )
+
+                # Preview in expander
+                with st.expander("👀 Preview Wishlist"):
+                    st.components.v1.html(wishlist_html, height=600, scrolling=True)
+
+                # ALL DEALS TABLE
+                st.markdown("---")
+                st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
+
+                for i, deal in enumerate(deals):
+                    condition = deal.get('condition', 'New')
+                    condition_badge = "" if condition == "New" else f" [{condition}]"
+                    with st.expander(f"**{i+1}. {deal['name'][:65]}...**{condition_badge} — ${deal['price']:,.2f}" +
+                                    (f" (Save ${deal['saving']:.0f})" if deal['saving'] > 0 else "")):
+                        dcol1, dcol2 = st.columns([2, 1])
+                        with dcol1:
+                            if condition != 'New':
+                                st.markdown(f"**Condition:** {condition}")
+                            st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
+                            st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
+                            st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
+                            st.markdown(f"**GPU:** {deal['specs']['gpu']}")
+                            # Screen specs
+                            if deal['specs']['screen_size'] > 0:
+                                st.markdown(f"**Screen:** {deal['specs']['screen_size']}\"")
+                            if deal['specs']['resolution'] != 'Unknown':
+                                st.markdown(f"**Resolution:** {deal['specs']['resolution']}")
+                            if deal['notes']:
+                                st.markdown(f"**Upgrades:** {', '.join(deal['notes'])}")
+                        with dcol2:
+                            st.link_button("🔗 View on Best Buy", deal['url'])
+
+    else:
+        st.info("👆 Upload a saved Best Buy HTML file to get started!")
+
+        # Demo section
+        with st.expander("ℹ️ What does this tool do?"):
+            st.markdown("""
+            This tool helps you find the best laptop upgrade deals by:
+
+            1. **Parsing** product data from a saved Best Buy webpage
+            2. **Extracting** specs (CPU, RAM, Storage, GPU, Screen) from product names
+            3. **Comparing** each laptop against your current computer
+            4. **Ranking** deals by upgrade value and price
+            5. **Creating** a festive wishlist to share with Santa! 🎅
+
+            **No accounts needed. No data stored. Everything runs in your browser!**
+            """)
