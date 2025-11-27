@@ -1088,7 +1088,8 @@ with tab2:
                         st.markdown(f"**Screen:** {deal['specs']['screen_size']}\" {deal['specs']['resolution']}")
                     st.link_button("🔗 View Deal", deal['url'])
 
-    # Process uploaded file (tab1 content continues)
+# Process uploaded file (MUST be in tab1 scope)
+with tab1:
     if uploaded_file is not None:
         # Analyze button
         if st.button("🔍 Analyze Deals", type="primary", key="upload_analyze"):
