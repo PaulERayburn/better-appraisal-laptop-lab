@@ -984,20 +984,10 @@ if 'current_specs' not in st.session_state:
 if 'analyzed' not in st.session_state:
     st.session_state['analyzed'] = False
 
-# Method selection intro
-st.markdown("### Choose Your Method:")
-method_col1, method_col2 = st.columns(2)
-with method_col1:
-    st.success("**🇨🇦 Canada** — Upload a saved Best Buy page")
-with method_col2:
-    st.info("**🇺🇸 US** — Live search across retailers")
-
 # Main content - Tabs for different input methods
-tab1, tab2 = st.tabs(["🇨🇦 Canada: Upload HTML", "🇺🇸 US: Live Search"])
+tab1, tab2 = st.tabs(["🇨🇦 CANADA: Upload Saved Page", "🇺🇸 USA: Live Search"])
 
 with tab1:
-    st.markdown("#### Save a Best Buy Canada page, then upload it here for analysis")
-    st.markdown("---")
 
     col1, col2 = st.columns([2, 1])
 
@@ -1033,9 +1023,6 @@ with tab1:
         show_all = st.checkbox("Show all products (not just upgrades)", key="upload_show_all")
 
 with tab2:
-    st.markdown("#### Search Google Shopping for deals across US retailers (no page saving needed!)")
-    st.markdown("---")
-    st.info("🛒 **Live Search** — Results from Best Buy, Amazon, Walmart, Newegg and more")
 
     # Search query input
     search_query = st.text_input("Search for laptops", value="gaming laptop", placeholder="e.g., gaming laptop RTX 4060")
