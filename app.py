@@ -1,8 +1,10 @@
 """
-Best Buy Deal Finder - Web App
-==============================
-A Streamlit web app to find laptop upgrade deals from Best Buy (US & Canada).
-Upload a saved HTML file and compare against your current specs.
+Better Appraisal Laptop Lab
+===========================
+A team-building app for learning web data extraction and analysis.
+Also functions as a practical laptop deal finder for Best Buy (US & Canada).
+
+Originally: Best Buy Deal Finder
 """
 
 import streamlit as st
@@ -12,8 +14,8 @@ import requests
 
 # Page config
 st.set_page_config(
-    page_title="Best Buy Deal Finder",
-    page_icon="💻",
+    page_title="Better Appraisal Laptop Lab",
+    page_icon="🔬",
     layout="wide"
 )
 
@@ -941,8 +943,9 @@ def generate_santa_wishlist(deals, current_specs, top_n=3):
 
 
 # Main App
-st.title("💻 Best Buy Deal Finder")
-st.markdown("*Find laptop upgrade deals from Best Buy (US & Canada)*")
+st.title("🔬 Better Appraisal Laptop Lab")
+st.markdown("*A team-building app for learning web data extraction — and a handy laptop deal finder!*")
+st.caption("Previously: Best Buy Deal Finder")
 
 # Sidebar - Instructions
 with st.sidebar:
