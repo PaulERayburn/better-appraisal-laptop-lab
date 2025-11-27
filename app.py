@@ -498,7 +498,9 @@ with st.sidebar:
 
     **Step 2:** Use filters to refine your search
 
-    **Step 3:** Click **"Show More"** to load all products
+    **Step 3:** Load all products:
+    - 🇨🇦 **Canada:** Click **"Show More"** until all products load
+    - 🇺🇸 **US:** Scroll down or use pagination to view all items
 
     **Step 4:** Save the page:
     - **Chrome:** ⋮ menu → Cast, save, and share → Save page as...
