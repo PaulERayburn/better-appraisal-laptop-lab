@@ -519,15 +519,11 @@ st.markdown("*Find laptop upgrade deals from Best Buy (US & Canada)*")
 with st.sidebar:
     st.header("📋 How to Use")
     st.markdown("""
-    **Step 1:** Go to Best Buy Laptops:
-    - 🇨🇦 [Best Buy Canada](https://www.bestbuy.ca/en-ca/category/laptops-macbooks/20352)
-    - 🇺🇸 [Best Buy US](https://www.bestbuy.com/site/laptop-computers/all-laptops/pcmcat138500050001.c)
+    **Step 1:** Go to [Best Buy Canada Laptops](https://www.bestbuy.ca/en-ca/category/laptops-macbooks/20352)
 
     **Step 2:** Use filters to refine your search
 
-    **Step 3:** Load all products:
-    - 🇨🇦 **Canada:** Click **"Show More"** until all products load
-    - 🇺🇸 **US:** Scroll down or use pagination to view all items
+    **Step 3:** Click **"Show More"** until all products load
 
     **Step 4:** Save the page:
     - **Chrome:** ⋮ menu → Cast, save, and share → Save page as...
@@ -538,9 +534,10 @@ with st.sidebar:
     **Step 5:** Upload the saved HTML file here
 
     **Step 6:** Enter your current specs and click Analyze!
-
-    *The app auto-detects US vs Canada format!*
     """)
+
+    st.markdown("---")
+    st.markdown("⚠️ **Note:** Best Buy US has limited support due to dynamic page loading. Best Buy Canada works best.")
 
     st.markdown("---")
     st.markdown("Made with ❤️ | [GitHub](https://github.com/PaulERayburn/bestbuy-deal-finder)")
@@ -613,6 +610,9 @@ if uploaded_file is not None:
         country_flag = "🇺🇸" if country == "US" else "🇨🇦"
         country_name = "US" if country == "US" else "Canada"
         st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
+
+        if country == "US":
+            st.warning("⚠️ **US Support is Experimental:** Best Buy US uses dynamic loading, so only some products may be captured. For best results, use Best Buy Canada.")
 
         if not deals:
             st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")

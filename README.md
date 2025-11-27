@@ -151,7 +151,8 @@ Higher scores appear first. When scores tie, cheaper laptops rank higher.
 
 ## Limitations
 
-- Only works with Best Buy Canada (bestbuy.ca)
+- **Best Buy Canada works best** - Full product data is embedded in saved pages
+- **Best Buy US is experimental** - US site uses dynamic JavaScript loading, so only a few products may be captured when saving the page
 - Spec parsing works best with gaming laptops that list specs in the title
 - Some specs may not be detected if they're formatted unusually
 - Only compares laptops currently shown on the saved page
