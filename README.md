@@ -165,10 +165,35 @@ Higher scores appear first. When scores tie, cheaper laptops rank higher.
 
 Feel free to open issues or pull requests! Some ideas for improvements:
 
-- Support for other retailers (Amazon, Newegg, etc.)
+### Amazon Support (TODO)
+
+**Amazon.ca HTML parsing** - A `deal_finder.py` script has been added that supports parsing saved Amazon.ca HTML pages (in addition to Best Buy). This works well because Amazon.ca allows proper filtering (AND logic) so you can save a manageable page of ~24 results.
+
+**Amazon.com (US) API Integration** - The US Amazon site has filtering issues that make HTML scraping impractical:
+- Uses OR logic for filters (any criteria matches = included)
+- Results in hundreds of pages of poorly-filtered results
+- Manual saving of multiple pages is tedious and error-prone
+
+For US Amazon support, contributors could implement one of these API options:
+
+| API | Access | Cost | Notes |
+|-----|--------|------|-------|
+| **Amazon Product Advertising API (PA-API 5.0)** | Requires Amazon Associates account | Free (with sales requirements) | Official API, best for structured product data |
+| **Rainforest API** | Sign up | $49/mo starter | Easy to use, good search capabilities |
+| **Keepa API** | Sign up | ~$19/mo | Best for price history data |
+
+If you are interested in adding Amazon US API support, please:
+1. Fork this repo and create a feature branch
+2. Add API integration in a new module (e.g., `amazon_api.py`)
+3. Keep API keys configurable via environment variables or Streamlit secrets
+4. Submit a PR with documentation
+
+### Other Ideas
+
 - Better spec detection for AMD processors
 - Price history tracking
 - Email/notification when deals appear
+- Support for other retailers (Newegg, Micro Center, etc.)
 
 ## License
 

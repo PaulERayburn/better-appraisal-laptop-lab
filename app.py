@@ -973,7 +973,7 @@ def generate_santa_wishlist(deals, current_specs, top_n=3):
 
 # Main App
 st.title("🔬 Better Appraisal Laptop Lab")
-st.markdown("*A team-building app for learning web data extraction — and a handy laptop deal finder!*")
+st.markdown("*A team-building app for learning AI Agent coding and contribution via GitHub, and a handy laptop deal finder! Just in time for Black Friday!*")
 st.caption("Previously: Best Buy Deal Finder")
 
 # Sidebar - Instructions
