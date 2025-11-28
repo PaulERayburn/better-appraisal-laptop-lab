@@ -19,6 +19,35 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS to make tabs larger and more prominent
+st.markdown("""
+<style>
+    /* Make tab buttons much larger */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 60px;
+        padding: 12px 24px;
+        font-size: 1.2rem;
+        font-weight: 600;
+        border-radius: 8px 8px 0 0;
+        background-color: #262730;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: #3d3d4d;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #1f77b4 !important;
+        color: white !important;
+    }
+    /* Tab panel styling */
+    .stTabs [data-baseweb="tab-panel"] {
+        padding-top: 20px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 def parse_size(size_str):
     """Parse storage/RAM strings like '16GB', '1TB', '512GB' into GB as integer."""
     if not size_str:
