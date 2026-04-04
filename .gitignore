@@ -40,6 +40,9 @@ desktop.ini
 *.txt
 !requirements.txt
 
+# Data directory (SQLite database, logs)
+data/
+
 # Build artifacts
 dist/
 build/

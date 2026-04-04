@@ -1,220 +1,59 @@
 """
-Better Appraisal Laptop Lab
-===========================
-A team-building app for learning web data extraction and analysis.
-Also functions as a practical laptop deal finder for Best Buy (US & Canada).
+Canada Tech Deal Tracker
+========================
+Track deals on laptops, desktops, RAM, and other tech components
+across Canadian retailers. Features automated price monitoring,
+customizable alerts, and email notifications.
 
-Originally: Best Buy Deal Finder
+Originally: Better Appraisal Laptop Lab / Best Buy Deal Finder
 """
 
 import streamlit as st
 import json
 import re
-import requests
+
+from spec_parser import extract_specs, extract_condition, parse_size, categorize_product, RESOLUTION_RANK
+from config import (
+    SUPPORTED_CATEGORIES, SUPPORTED_RETAILERS, RETAILER_DISPLAY_NAMES,
+    get_serpapi_key,
+)
+from database import Database
+from scrapers import identify_retailer
 
 # Page config
 st.set_page_config(
-    page_title="Better Appraisal Laptop Lab",
-    page_icon="🔬",
+    page_title="Canada Tech Deal Tracker",
+    page_icon="🍁",
     layout="wide"
 )
 
-# Custom CSS to make tabs larger and more prominent
+# Custom CSS for tabs
 st.markdown("""
 <style>
-    /* Make tab buttons much larger */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] {
-        height: 60px;
-        padding: 12px 24px;
-        font-size: 1.2rem;
-        font-weight: 600;
-        border-radius: 8px 8px 0 0;
-        background-color: #262730;
+        height: 60px; padding: 12px 24px; font-size: 1.2rem;
+        font-weight: 600; border-radius: 8px 8px 0 0; background-color: #262730;
     }
-    .stTabs [data-baseweb="tab"]:hover {
-        background-color: #3d3d4d;
-    }
+    .stTabs [data-baseweb="tab"]:hover { background-color: #3d3d4d; }
     .stTabs [aria-selected="true"] {
-        background-color: #1f77b4 !important;
-        color: white !important;
+        background-color: #d32f2f !important; color: white !important;
     }
-    /* Tab panel styling */
-    .stTabs [data-baseweb="tab-panel"] {
-        padding-top: 20px;
-    }
+    .stTabs [data-baseweb="tab-panel"] { padding-top: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
-def parse_size(size_str):
-    """Parse storage/RAM strings like '16GB', '1TB', '512GB' into GB as integer."""
-    if not size_str:
-        return 0
-    size_str = str(size_str).upper().replace(" ", "")
-
-    try:
-        if "TB" in size_str:
-            match = re.search(r'(\d+(?:\.\d+)?)', size_str)
-            if match:
-                return int(float(match.group(1)) * 1024)
-        if "GB" in size_str:
-            match = re.search(r'(\d+(?:\.\d+)?)', size_str)
-            if match:
-                return int(float(match.group(1)))
-    except (ValueError, AttributeError):
-        pass
-    return 0
+# Initialize database
+db = Database()
 
 
-def extract_condition(name):
-    """Extract product condition from name (New, Refurbished, Open Box)."""
-    name_lower = name.lower()
+# ── Helper functions (kept from original for Best Buy CA parsing) ──
 
-    if 'refurbished' in name_lower:
-        # Try to get the grade too (Excellent, Good, Fair)
-        if '(excellent)' in name_lower or 'excellent' in name_lower:
-            return 'Refurbished (Excellent)'
-        elif '(good)' in name_lower or 'good' in name_lower:
-            return 'Refurbished (Good)'
-        elif '(fair)' in name_lower:
-            return 'Refurbished (Fair)'
-        return 'Refurbished'
-    elif 'open box' in name_lower:
-        return 'Open Box'
-    else:
-        return 'New'
-
-
-def extract_specs(name):
-    """Extract CPU, RAM, Storage, GPU, screen size, and resolution from a product name string."""
-    specs = {
-        'cpu_gen': 0,
-        'cpu_model': 'Unknown',
-        'ram': 0,
-        'storage': 0,
-        'gpu': 'Integrated',
-        'screen_size': 0,
-        'resolution': 'Unknown'
-    }
-
-    # Intel Core iX-XXXXX (e.g., i7-13620H, i5-12450H)
-    intel_match = re.search(r'(i\d)-(\d{4,5})', name)
-    if intel_match:
-        specs['cpu_model'] = f"{intel_match.group(1)}-{intel_match.group(2)}"
-        model_num = intel_match.group(2)
-        if len(model_num) == 5:
-            specs['cpu_gen'] = int(model_num[:2])
-        elif len(model_num) == 4:
-            specs['cpu_gen'] = int(model_num[0])
-
-    # Intel Core Ultra (newer chips, treat as gen 14+)
-    ultra_match = re.search(r'(?:Core\s+)?Ultra\s*(\d+)', name, re.IGNORECASE)
-    if ultra_match:
-        specs['cpu_gen'] = 14
-        specs['cpu_model'] = f"Ultra {ultra_match.group(1)}"
-
-    # AMD Ryzen (e.g., Ryzen 7 7840HS)
-    amd_match = re.search(r'Ryzen\s*(\d)\s*(\d{4})', name, re.IGNORECASE)
-    if amd_match:
-        specs['cpu_model'] = f"Ryzen {amd_match.group(1)} {amd_match.group(2)}"
-        series = int(amd_match.group(2)[0])
-        specs['cpu_gen'] = series + 6
-
-    # RAM - multiple patterns to catch various formats
-    ram_patterns = [
-        r'(\d+)\s*GB\s*(?:DDR\d?)?\s*RAM',           # 16GB DDR5 RAM, 16GB RAM
-        r'(\d+)\s*GB\s*DDR\d',                        # 16GB DDR5
-        r'[,/\s](\d+)\s*GB[,/\s]',                    # /16GB/ or , 16GB,
-        r'(\d+)GB(?:\s|,|/|-|$)',                     # 16GB followed by separator or end
-        r'[^\d](\d+)\s*GB\s+(?:Memory|Mem)',          # 16 GB Memory
-        r'-\s*(\d+)GB',                               # -16GB
-    ]
-    for pattern in ram_patterns:
-        ram_match = re.search(pattern, name, re.IGNORECASE)
-        if ram_match:
-            ram_val = int(ram_match.group(1))
-            # Valid RAM sizes for laptops (8, 12, 16, 24, 32, 64, 128)
-            if ram_val in [8, 12, 16, 24, 32, 48, 64, 96, 128]:
-                specs['ram'] = ram_val
-                break
-
-    # Storage - multiple patterns for SSD/storage
-    storage_patterns = [
-        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*SSD',           # 512GB SSD, 1TB SSD
-        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*(?:NVMe|PCIe)', # 512GB NVMe
-        r'SSD[:\s]*(\d+(?:\.\d+)?)\s*(TB|GB)',        # SSD: 512GB
-        r'(\d+(?:\.\d+)?)\s*(TB|GB)\s*(?:Storage|Hard|Drive)', # 512GB Storage
-        r'[,/\s](\d+)\s*(TB)[,/\s]',                  # /1TB/ - TB is likely storage
-        r'[,/\s](512|256|1024|2048)\s*GB[,/\s]',     # Common SSD sizes
-    ]
-    for pattern in storage_patterns:
-        storage_match = re.search(pattern, name, re.IGNORECASE)
-        if storage_match:
-            if len(storage_match.groups()) >= 2:
-                specs['storage'] = parse_size(f"{storage_match.group(1)}{storage_match.group(2)}")
-            else:
-                specs['storage'] = parse_size(f"{storage_match.group(1)}GB")
-            break
-
-    # GPU
-    gpu_match = re.search(r'(RTX\s*\d{4}(?:\s*Ti)?|GTX\s*\d{4})', name, re.IGNORECASE)
-    if gpu_match:
-        specs['gpu'] = gpu_match.group(1).upper().replace(" ", " ")
-
-    # Screen size (e.g., 15.6", 14", 17.3")
-    screen_patterns = [
-        r'(\d{1,2}(?:\.\d)?)["\u201d\u2033]\s*(?:FHD|QHD|UHD|HD|OLED|IPS|LED)?',  # 15.6" FHD
-        r'(\d{1,2}(?:\.\d)?)\s*(?:inch|in)\b',  # 15.6 inch
-        r'(\d{1,2}(?:\.\d)?)\s*(?:FHD|QHD|UHD|HD|OLED)',  # 15.6 FHD (no quote)
-    ]
-    for pattern in screen_patterns:
-        screen_match = re.search(pattern, name, re.IGNORECASE)
-        if screen_match:
-            size = float(screen_match.group(1))
-            if 10 <= size <= 20:  # Valid laptop screen sizes
-                specs['screen_size'] = size
-                break
-
-    # Resolution (FHD, QHD, UHD/4K, HD, etc.)
-    resolution_map = {
-        r'\b4K\b': '4K UHD',
-        r'\bUHD\b': '4K UHD',
-        r'\bQHD\+': 'QHD+',
-        r'\bQHD\b': 'QHD',
-        r'\bWQXGA\b': 'WQXGA',
-        r'\bFHD\+': 'FHD+',
-        r'\bFHD\b': 'FHD',
-        r'\b1080p\b': 'FHD',
-        r'\b1440p\b': 'QHD',
-        r'\b2160p\b': '4K UHD',
-        r'\bHD\+': 'HD+',
-        r'\bHD\b': 'HD',
-        r'\bOLED\b': 'OLED',  # Often indicates premium display
-    }
-    for pattern, resolution in resolution_map.items():
-        if re.search(pattern, name, re.IGNORECASE):
-            # Special case: if we find OLED, check if there's also a resolution
-            if resolution == 'OLED':
-                specs['resolution'] = 'OLED'
-                # Keep looking for actual resolution
-                continue
-            specs['resolution'] = resolution
-            break
-
-    return specs
-
-
-def extract_products_from_html(content, country="CA"):
-    """Extract product data from Best Buy saved HTML page (US or Canada)."""
-
-    # Try Canada format first (window.__INITIAL_STATE__)
-    # Find the start of the JSON object
+def extract_products_from_html(content):
+    """Extract product data from Best Buy Canada saved HTML page."""
     state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*\{', content)
     if state_match:
-        # Find the matching closing brace by counting braces
-        start_pos = state_match.end() - 1  # Position of opening {
+        start_pos = state_match.end() - 1
         brace_count = 0
         end_pos = start_pos
 
@@ -247,222 +86,224 @@ def extract_products_from_html(content, country="CA"):
                         products = search['results']
 
                 if products:
-                    return products, None, "CA"
+                    return products, None
             except json.JSONDecodeError:
                 pass
 
-    # Try US format (GraphQL/Apollo style embedded in HTML)
-    # US Best Buy embeds product data differently - we need to extract it from the page
-    products = extract_us_products(content)
-    if products:
-        return products, None, "US"
-
-    return None, "Could not find product data. Make sure you saved a Best Buy product listing page (US or Canada).", None
+    return None, "Could not find product data. Make sure you saved a Best Buy Canada product listing page."
 
 
-def extract_us_products(content):
-    """Extract products from US Best Buy HTML format."""
-    products = []
+def analyze_deals(products, current_specs, show_all=False, filter_incomplete=True):
+    """Analyze products and compare against current specs."""
+    base_url = "https://www.bestbuy.ca"
+    deals = []
+    skipped_incomplete = 0
 
-    # US format has product names in "name":{"__typename":"ProductName","short":"..."}
-    # and prices in "customerPrice":XXX.XX,"skuId":"..."
+    for p in products:
+        name = p.get('name', '')
+        price = p.get('priceWithoutEhf') or p.get('customerPrice') or p.get('price', 0)
+        if isinstance(price, dict):
+            price = price.get('customerPrice', 0)
 
-    # Build a map of SKU -> price first
-    price_pattern = r'"customerPrice":([\d.]+),"skuId":"(\d+)"'
-    sku_prices = {}
-    for match in re.finditer(price_pattern, content):
-        price, sku = match.groups()
-        if sku not in sku_prices:
-            sku_prices[sku] = float(price)
+        saving = p.get('saving', 0)
+        sku = p.get('sku') or p.get('skuId', '')
 
-    # Find all product names
-    name_pattern = r'"name":\{"__typename":"ProductName","short":"([^"]+)"'
-    name_matches = list(re.finditer(name_pattern, content))
+        specs = extract_specs(name)
+        condition = extract_condition(name)
 
-    # Extract products by finding name blocks and nearby SKUs
-    seen_skus = set()
+        if filter_incomplete and specs['ram'] == 0:
+            skipped_incomplete += 1
+            continue
 
-    for name_match in name_matches:
-        short_name = name_match.group(1)
+        seo_url = p.get('seoUrl', '')
+        if seo_url and seo_url.startswith('http'):
+            url = seo_url
+        elif seo_url:
+            url = base_url + seo_url
+        else:
+            url = f"{base_url}/en-ca/product/{sku}" if sku else "#"
 
-        # Clean up escaped characters
-        short_name = short_name.replace('\\"', '"').replace('\\/', '/')
+        better_cpu = specs['cpu_gen'] > current_specs['cpu_gen']
+        better_ram = specs['ram'] > current_specs['ram']
+        better_storage = specs['storage'] >= current_specs['storage']
+        bigger_screen = specs['screen_size'] > current_specs.get('screen_size', 0) if specs['screen_size'] > 0 else False
 
-        # Look for SKU near this name (within ~3000 chars before)
-        start_pos = max(0, name_match.start() - 3000)
-        context = content[start_pos:name_match.end() + 500]
+        current_res_rank = RESOLUTION_RANK.get(current_specs.get('resolution', 'FHD'), 3)
+        product_res_rank = RESOLUTION_RANK.get(specs['resolution'], 0)
+        better_resolution = product_res_rank > current_res_rank if product_res_rank > 0 else False
 
-        # Try to find SKU in context
-        sku_match = re.search(r'"sku":"(\d+)"', context)
-        if not sku_match:
-            sku_match = re.search(r'"skuId":"(\d+)"', context)
+        notes = []
+        if better_cpu:
+            notes.append(f"CPU+ (Gen {specs['cpu_gen']})")
+        if better_ram:
+            notes.append(f"RAM+ ({specs['ram']}GB)")
+        if better_storage:
+            notes.append(f"Storage+ ({specs['storage']}GB)")
+        elif specs['storage'] > 0 and specs['storage'] < current_specs['storage']:
+            notes.append(f"Storage- ({specs['storage']}GB)")
+        if bigger_screen:
+            notes.append(f"Screen+ ({specs['screen_size']}\")")
+        if better_resolution:
+            notes.append(f"Res+ ({specs['resolution']})")
 
-        if sku_match:
-            sku = sku_match.group(1)
+        score = 0
+        if better_cpu: score += 2
+        if better_ram: score += 2
+        if better_storage: score += 1
+        if bigger_screen: score += 1
+        if better_resolution: score += 1
+        if saving > 0: score += 1
 
-            # Skip if we've already processed this SKU
-            if sku in seen_skus:
-                continue
-            seen_skus.add(sku)
+        deal = {
+            'name': name,
+            'price': price,
+            'saving': saving,
+            'specs': specs,
+            'condition': condition,
+            'notes': notes,
+            'score': score,
+            'url': url,
+            'sku': sku,
+            'source': p.get('source', 'Best Buy Canada'),
+            'is_upgrade': better_cpu or better_ram,
+            'retailer': 'bestbuy_ca',
+        }
 
-            price = sku_prices.get(sku, 0)
+        if show_all or deal['is_upgrade']:
+            deals.append(deal)
 
-            # Skip products without prices (not fully loaded)
-            if price == 0:
-                continue
-
-            # Check for savings
-            saving = 0
-            regular_match = re.search(rf'"skuId":"{sku}"[^}}]*"regularPrice":([\d.]+)', content)
-            if regular_match:
-                regular = float(regular_match.group(1))
-                if regular > price:
-                    saving = regular - price
-
-            products.append({
-                'name': short_name,
-                'sku': sku,
-                'skuId': sku,
-                'price': price,
-                'customerPrice': price,
-                'saving': saving,
-                'seoUrl': f'/site/{sku}.p?skuId={sku}',
-                'country': 'US'
-            })
-
-    return products if products else None
-
-
-def get_serpapi_key():
-    """Get SerpApi key from Streamlit secrets or environment."""
-    # Try Streamlit secrets first (for cloud deployment)
-    try:
-        return st.secrets.get("SERPAPI_KEY", "")
-    except Exception:
-        pass
-    # Fallback to environment variable (for local development)
-    import os
-    return os.environ.get("SERPAPI_KEY", "")
+    deals.sort(key=lambda x: (-x['score'], x['price']))
+    return deals, skipped_incomplete
 
 
-def build_search_query(base_query, specs):
-    """Build an optimized search query based on user's desired specs."""
-    query_parts = [base_query]
+def analyze_search_deals(products, current_specs, min_specs=None, show_all=False):
+    """Analyze products from SerpApi search with optional min spec filtering."""
+    deals = []
+    skipped = 0
 
-    # Add RAM requirement if significant
-    if specs.get('ram', 0) >= 32:
-        query_parts.append(f"{specs['ram']}GB RAM")
-    elif specs.get('ram', 0) >= 16:
-        query_parts.append("16GB+ RAM")
+    for p in products:
+        name = p.get('name', '')
+        price = p.get('price', 0)
+        original_price = p.get('original_price')
+        saving = p.get('saving', 0)
+        url = p.get('url', '')
+        source = p.get('source_display', '')
+        retailer = p.get('retailer', 'unknown')
+        sku = p.get('retailer_sku', '')
 
-    # Add storage requirement
-    if specs.get('storage', 0) >= 1024:
-        tb = specs['storage'] // 1024
-        query_parts.append(f"{tb}TB SSD")
-    elif specs.get('storage', 0) >= 512:
-        query_parts.append("512GB+ SSD")
+        category = p.get('category', 'laptop')
+        specs = p.get('specs', extract_specs(name, category))
+        condition = extract_condition(name)
 
-    # Add screen size
-    if specs.get('screen_size', 0) >= 17:
-        query_parts.append('17"')
-    elif specs.get('screen_size', 0) >= 15:
-        query_parts.append('15.6"')
+        # Filter by min specs
+        if min_specs and not show_all:
+            min_ram = min_specs.get('ram', 0)
+            # For RAM products, filter by detected capacity
+            # If capacity can't be detected, exclude it (ambiguous listing)
+            if category == 'ram' and min_ram > 0:
+                detected_ram = specs.get('ram', 0)
+                if detected_ram == 0 or detected_ram < min_ram:
+                    skipped += 1
+                    continue
+            # For laptops/desktops, full spec filtering
+            if category in ('laptop', 'desktop'):
+                if specs.get('ram', 0) == 0:
+                    skipped += 1
+                    continue
+                if specs.get('ram', 0) < min_ram:
+                    skipped += 1
+                    continue
+                if specs.get('storage', 0) > 0 and specs['storage'] < min_specs.get('storage', 0):
+                    skipped += 1
+                    continue
+                if specs.get('cpu_gen', 0) > 0 and specs['cpu_gen'] < min_specs.get('cpu_gen', 0):
+                    skipped += 1
+                    continue
 
-    # Add resolution
-    resolution = specs.get('resolution', 'FHD')
-    if resolution in ['4K UHD', 'QHD+', 'QHD']:
-        query_parts.append(resolution.replace(' ', ''))
+        # Scoring depends on category
+        notes = []
+        score = 0
+        is_upgrade = False
 
-    return " ".join(query_parts)
+        if category in ('laptop', 'desktop'):
+            # Laptop/desktop: compare against current specs
+            better_cpu = specs.get('cpu_gen', 0) > current_specs.get('cpu_gen', 0) if specs.get('cpu_gen', 0) > 0 else False
+            better_ram = specs.get('ram', 0) > current_specs.get('ram', 0)
+            better_storage = specs.get('storage', 0) >= current_specs.get('storage', 0) if specs.get('storage', 0) > 0 else False
+
+            if better_cpu:
+                notes.append(f"CPU+ (Gen {specs['cpu_gen']})")
+                score += 2
+            if better_ram:
+                notes.append(f"RAM+ ({specs['ram']}GB)")
+                score += 2
+            if better_storage:
+                notes.append(f"Storage+ ({specs['storage']}GB)")
+                score += 1
+            if saving > 0:
+                score += 1
+            is_upgrade = better_cpu or better_ram or better_storage
+        else:
+            # Components (RAM, CPU, GPU, etc.): rank by best price
+            # Score is inverted — lower price = better deal
+            # We use a large base so sorting by -score still works
+            if price > 0:
+                score = 10000 - int(price)  # Lower price = higher score
+            if saving > 0:
+                discount_pct = (saving / (price + saving)) * 100 if (price + saving) > 0 else 0
+                notes.append(f"{discount_pct:.0f}% off")
+
+        deal = {
+            'name': name,
+            'price': price,
+            'original_price': original_price,
+            'saving': saving,
+            'specs': specs,
+            'condition': condition,
+            'notes': notes,
+            'score': score,
+            'url': url,
+            'sku': sku,
+            'source': source,
+            'retailer': retailer,
+            'category': category,
+            'is_upgrade': is_upgrade,
+            'thumbnail': p.get('thumbnail', ''),
+        }
+
+        if show_all or is_upgrade or category not in ('laptop', 'desktop'):
+            deals.append(deal)
+
+    deals.sort(key=lambda x: (-x['score'], x['price']))
+    return deals, skipped
 
 
-def search_google_shopping(query, max_results=40, specs=None):
-    """
-    Search Google Shopping using SerpApi.
-    Free tier: 250 searches/month.
-    """
-    api_key = get_serpapi_key()
+def save_deal_to_db(deal):
+    """Save a deal to the database and record its price."""
+    from spec_parser import extract_specs as _extract_specs
+    specs = deal.get('specs', {})
 
-    if not api_key:
-        return None, "Search API not configured. Please use the HTML upload method instead."
-
-    products = []
-
-    # Build enhanced query if specs provided
-    if specs:
-        query = build_search_query(query, specs)
-
-    # SerpApi Google Shopping endpoint
-    params = {
-        "engine": "google_shopping",
-        "q": query,
-        "api_key": api_key,
-        "num": max_results,
-        "gl": "us",  # US results
-        "hl": "en",  # English
-        "direct_link": "true"  # Request direct retailer links
+    product_dict = {
+        'retailer': deal.get('retailer', 'unknown'),
+        'retailer_sku': deal.get('sku', deal.get('name', '')[:50]),
+        'name': deal['name'],
+        'url': deal.get('url', '#'),
+        'category': deal.get('category', categorize_product(deal['name'])),
+        'brand': None,
+        'cpu_model': specs.get('cpu_model'),
+        'cpu_gen': specs.get('cpu_gen'),
+        'ram_gb': specs.get('ram'),
+        'storage_gb': specs.get('storage'),
+        'gpu': specs.get('gpu'),
+        'screen_size': specs.get('screen_size'),
+        'resolution': specs.get('resolution'),
+        'ram_type': specs.get('ram_type'),
+        'ram_speed_mhz': specs.get('ram_speed_mhz'),
     }
 
-    try:
-        response = requests.get("https://serpapi.com/search", params=params, timeout=30)
-        response.raise_for_status()
-
-        data = response.json()
-
-        # Check for API errors
-        if "error" in data:
-            return None, f"API Error: {data['error']}"
-
-        # Extract shopping results
-        shopping_results = data.get("shopping_results", [])
-
-        if not shopping_results:
-            return None, "No products found for this search."
-
-        for item in shopping_results[:max_results]:
-            # Extract price (remove $ and convert to float)
-            price_str = item.get("price", "$0")
-            if isinstance(price_str, str):
-                price = float(re.sub(r'[^\d.]', '', price_str) or 0)
-            else:
-                price = float(price_str) if price_str else 0
-
-            # Extract original price for savings calculation
-            original_price_str = item.get("extracted_price", 0)
-            old_price_str = item.get("old_price", "")
-            saving = 0
-
-            if old_price_str:
-                old_price = float(re.sub(r'[^\d.]', '', old_price_str) or 0)
-                if old_price > price:
-                    saving = old_price - price
-
-            # Get the best available link (prefer direct link, fallback to product_link)
-            direct_link = item.get("link", "")
-            product_link = item.get("product_link", "")
-
-            # Use direct link if available, otherwise use Google Shopping product page
-            best_link = direct_link if direct_link else product_link
-
-            products.append({
-                'name': item.get("title", "Unknown Product"),
-                'sku': item.get("product_id", ""),
-                'price': price,
-                'saving': saving,
-                'seoUrl': best_link,
-                'source': item.get("source", ""),  # Store name (Best Buy, Amazon, etc.)
-                'thumbnail': item.get("thumbnail", ""),
-                'country': 'US'
-            })
-
-        return products, None
-
-    except requests.exceptions.Timeout:
-        return None, "Request timed out. Try again later."
-    except requests.exceptions.RequestException as e:
-        return None, f"Failed to fetch search results: {str(e)}"
-    except json.JSONDecodeError:
-        return None, "Invalid response from search API."
+    product_id = db.upsert_product(product_dict)
+    db.record_price(product_id, deal['price'], deal.get('original_price'))
+    return product_id
 
 
 def get_demo_products():
@@ -527,505 +368,596 @@ def get_demo_products():
     ]
 
 
-def analyze_deals(products, current_specs, show_all=False, country="CA", filter_incomplete=True):
-    """Analyze products and compare against current specs."""
-    if country == "US":
-        base_url = "https://www.bestbuy.com"
-    else:
-        base_url = "https://www.bestbuy.ca"
+# ══════════════════════════════════════════════════════════════════
+# Product deduplication
+# ══════════════════════════════════════════════════════════════════
 
-    deals = []
-    skipped_incomplete = 0
-
+def _deduplicate_products(products):
+    """Remove duplicate products across sources, keeping the cheapest."""
+    seen = {}
     for p in products:
-        name = p.get('name', '')
+        # Create a dedup key from normalized product identifiers
+        sku = p.get('retailer_sku', '')
+        name = p.get('name', '').lower().strip()
+        # Normalize: remove common filler words and extra spaces
+        name_key = re.sub(r'[^a-z0-9]', '', name)[:60]
+        price = p.get('price', 0)
 
-        # Handle different price field names between US and Canada
-        price = p.get('priceWithoutEhf') or p.get('customerPrice') or p.get('price', 0)
-        if isinstance(price, dict):
-            price = price.get('customerPrice', 0)
-
-        saving = p.get('saving', 0)
-        sku = p.get('sku') or p.get('skuId', '')
-
-        specs = extract_specs(name)
-        condition = extract_condition(name)
-
-        # Filter out products with incomplete specs (no RAM detected)
-        # This helps remove accessories, bundles, and poorly-formatted listings
-        if filter_incomplete and specs['ram'] == 0:
-            skipped_incomplete += 1
-            continue
-
-        seo_url = p.get('seoUrl', '')
-        # Use the URL directly if it's a full URL (from Google Shopping)
-        if seo_url and seo_url.startswith('http'):
-            url = seo_url
-        elif country == "US":
-            url = f"{base_url}/site/{sku}.p?skuId={sku}" if sku else seo_url
-        elif seo_url:
-            url = base_url + seo_url
+        key = name_key
+        if key in seen:
+            # Keep the cheaper one
+            if price < seen[key].get('price', float('inf')):
+                seen[key] = p
         else:
-            url = f"{base_url}/en-ca/product/{sku}" if sku else "#"
-
-        better_cpu = specs['cpu_gen'] > current_specs['cpu_gen']
-        better_ram = specs['ram'] > current_specs['ram']
-        better_storage = specs['storage'] >= current_specs['storage']
-
-        # Screen size comparison
-        bigger_screen = specs['screen_size'] > current_specs.get('screen_size', 0) if specs['screen_size'] > 0 else False
-
-        # Resolution comparison (rank: HD < HD+ < FHD < FHD+ < QHD < QHD+ < 4K UHD)
-        resolution_rank = {"HD": 1, "HD+": 2, "FHD": 3, "FHD+": 4, "QHD": 5, "WQXGA": 5, "QHD+": 6, "4K UHD": 7, "OLED": 4, "Unknown": 0}
-        current_res_rank = resolution_rank.get(current_specs.get('resolution', 'FHD'), 3)
-        product_res_rank = resolution_rank.get(specs['resolution'], 0)
-        better_resolution = product_res_rank > current_res_rank if product_res_rank > 0 else False
-
-        notes = []
-        if better_cpu:
-            notes.append(f"CPU+ (Gen {specs['cpu_gen']})")
-        if better_ram:
-            notes.append(f"RAM+ ({specs['ram']}GB)")
-        if better_storage:
-            notes.append(f"Storage+ ({specs['storage']}GB)")
-        elif specs['storage'] > 0 and specs['storage'] < current_specs['storage']:
-            notes.append(f"Storage- ({specs['storage']}GB)")
-        if bigger_screen:
-            notes.append(f"Screen+ ({specs['screen_size']}\")")
-        if better_resolution:
-            notes.append(f"Res+ ({specs['resolution']})")
-
-        score = 0
-        if better_cpu:
-            score += 2
-        if better_ram:
-            score += 2
-        if better_storage:
-            score += 1
-        if bigger_screen:
-            score += 1
-        if better_resolution:
-            score += 1
-        if saving > 0:
-            score += 1
-
-        deal = {
-            'name': name,
-            'price': price,
-            'saving': saving,
-            'specs': specs,
-            'condition': condition,
-            'notes': notes,
-            'score': score,
-            'url': url,
-            'sku': sku,
-            'source': p.get('source', ''),  # Store name from Google Shopping
-            'is_upgrade': better_cpu or better_ram
-        }
-
-        if show_all or deal['is_upgrade']:
-            deals.append(deal)
-
-    deals.sort(key=lambda x: (-x['score'], x['price']))
-    return deals, skipped_incomplete
+            seen[key] = p
+    return list(seen.values())
 
 
-def analyze_deals_with_filters(products, current_specs, min_specs, show_all=False, country="CA"):
+# ══════════════════════════════════════════════════════════════════
+# RAM filter & display helpers
+# ══════════════════════════════════════════════════════════════════
+
+def _apply_ram_filters(products, ram_filters):
+    """Apply must/optional RAM filters to products.
+
+    Returns (filtered_products, optional_scores_dict, skipped_count).
+    - Must filters: exclude non-matching products
+    - Optional filters: boost score for matching products
     """
-    Analyze products with separate current specs (for comparison) and min specs (for filtering).
-
-    - current_specs: User's current computer - used for upgrade comparison notes
-    - min_specs: Minimum requirements - used to filter out laptops that don't meet criteria
-    """
-    if country == "US":
-        base_url = "https://www.bestbuy.com"
-    else:
-        base_url = "https://www.bestbuy.ca"
-
-    deals = []
+    filtered = []
+    optional_scores = {}
     skipped = 0
 
-    # Resolution ranking for comparisons
-    resolution_rank = {"HD": 1, "HD+": 2, "FHD": 3, "FHD+": 4, "QHD": 5, "WQXGA": 5, "QHD+": 6, "4K UHD": 7, "OLED": 4, "Unknown": 0}
-
     for p in products:
-        name = p.get('name', '')
+        specs = p.get('specs', {})
+        passed = True
 
-        # Handle different price field names
-        price = p.get('priceWithoutEhf') or p.get('customerPrice') or p.get('price', 0)
-        if isinstance(price, dict):
-            price = price.get('customerPrice', 0)
+        # --- Must filters ---
+        # Capacity
+        cap_val, cap_mode = ram_filters.get('capacity', (0, 'Off'))
+        if cap_mode == 'Must' and cap_val > 0:
+            detected = specs.get('ram', 0)
+            if detected == 0 or detected != cap_val:
+                passed = False
 
-        saving = p.get('saving', 0)
-        sku = p.get('sku') or p.get('skuId', '')
+        # DDR Type
+        type_val, type_mode = ram_filters.get('ddr_type', ('Any', 'Off'))
+        if type_mode == 'Must' and type_val != 'Any':
+            detected = specs.get('ram_type', 'Unknown')
+            if detected == 'Unknown' or detected != type_val:
+                passed = False
 
-        specs = extract_specs(name)
-        condition = extract_condition(name)
+        # Form Factor — when Must, exclude unknowns too
+        form_val, form_mode = ram_filters.get('form_factor', ('Any', 'Off'))
+        if form_mode == 'Must' and form_val != 'Any':
+            target_ff = 'SO-DIMM' if 'SO-DIMM' in form_val else 'DIMM'
+            detected = specs.get('form_factor', 'Unknown')
+            if detected != target_ff:
+                passed = False
 
-        # === FILTERING against minimum requirements ===
-        # Skip if missing RAM (can't evaluate properly)
-        if specs['ram'] == 0:
+        # Kit Config
+        kit_val, kit_mode = ram_filters.get('kit_config', ('Any', 'Off'))
+        if kit_mode == 'Must' and kit_val != 'Any':
+            detected_sticks = specs.get('stick_count', 0)
+            if detected_sticks > 0:
+                if 'Single' in kit_val and detected_sticks != 1:
+                    passed = False
+                elif '2-Stick' in kit_val and detected_sticks != 2:
+                    passed = False
+                elif '4-Stick' in kit_val and detected_sticks != 4:
+                    passed = False
+
+        # Brand
+        brand_val, brand_mode = ram_filters.get('brand', ('Any', 'Off'))
+        if brand_mode == 'Must' and brand_val != 'Any':
+            detected = specs.get('brand', '')
+            if detected and detected.lower() != brand_val.lower():
+                passed = False
+
+        # Min Speed
+        speed_val, speed_mode = ram_filters.get('min_speed', (0, 'Off'))
+        if speed_mode == 'Must' and speed_val > 0:
+            detected = specs.get('ram_speed_mhz', 0)
+            if detected > 0 and detected < speed_val:
+                passed = False
+
+        # Max CAS Latency
+        cl_val, cl_mode = ram_filters.get('max_cl', (0, 'Off'))
+        if cl_mode == 'Must' and cl_val > 0:
+            detected = specs.get('cas_latency', 0)
+            if detected > 0 and detected > cl_val:
+                passed = False
+
+        # Max Price
+        price_val, price_mode = ram_filters.get('max_price', (0, 'Off'))
+        if price_mode == 'Must' and price_val > 0:
+            if p.get('price', 0) > price_val:
+                passed = False
+
+        if not passed:
             skipped += 1
             continue
 
-        # Skip if below minimum requirements (unless show_all is checked)
-        if not show_all:
-            if specs['ram'] < min_specs.get('ram', 0):
-                skipped += 1
-                continue
-            if specs['storage'] > 0 and specs['storage'] < min_specs.get('storage', 0):
-                skipped += 1
-                continue
-            if specs['cpu_gen'] > 0 and specs['cpu_gen'] < min_specs.get('cpu_gen', 0):
-                skipped += 1
-                continue
-            if specs['screen_size'] > 0 and specs['screen_size'] < min_specs.get('screen_size', 0):
-                skipped += 1
-                continue
-            # Resolution filtering
-            min_res = min_specs.get('resolution', 'FHD')
-            min_res_rank = resolution_rank.get(min_res, 3)
-            product_res_rank = resolution_rank.get(specs['resolution'], 0)
-            # Only filter if we detected a resolution AND it's below minimum
-            if product_res_rank > 0 and product_res_rank < min_res_rank:
-                skipped += 1
-                continue
+        # --- Optional scoring ---
+        opt_score = 0
 
-        # Build URL
-        seo_url = p.get('seoUrl', '')
-        if seo_url and seo_url.startswith('http'):
-            url = seo_url
-        elif country == "US":
-            url = f"{base_url}/site/{sku}.p?skuId={sku}" if sku else seo_url
-        elif seo_url:
-            url = base_url + seo_url
-        else:
-            url = f"{base_url}/en-ca/product/{sku}" if sku else "#"
+        if cap_mode == 'Optional' and cap_val > 0:
+            if specs.get('ram', 0) == cap_val:
+                opt_score += 3
 
-        # === COMPARISON against current computer ===
-        better_cpu = specs['cpu_gen'] > current_specs.get('cpu_gen', 0) if specs['cpu_gen'] > 0 else False
-        better_ram = specs['ram'] > current_specs.get('ram', 0)
-        better_storage = specs['storage'] >= current_specs.get('storage', 0) if specs['storage'] > 0 else False
-        bigger_screen = specs['screen_size'] > current_specs.get('screen_size', 0) if specs['screen_size'] > 0 else False
+        if type_mode == 'Optional' and type_val != 'Any':
+            if specs.get('ram_type', '') == type_val:
+                opt_score += 2
 
-        current_res_rank = resolution_rank.get(current_specs.get('resolution', 'FHD'), 3)
-        product_res_rank = resolution_rank.get(specs['resolution'], 0)
-        better_resolution = product_res_rank > current_res_rank if product_res_rank > 0 else False
+        if form_mode == 'Optional' and form_val != 'Any':
+            target_ff = 'SO-DIMM' if 'SO-DIMM' in form_val else 'DIMM'
+            if specs.get('form_factor', '') == target_ff:
+                opt_score += 2
 
-        # Build upgrade notes (comparing to current computer)
-        notes = []
-        if better_cpu:
-            notes.append(f"CPU+ (Gen {specs['cpu_gen']})")
-        if better_ram:
-            notes.append(f"RAM+ ({specs['ram']}GB)")
-        if better_storage:
-            notes.append(f"Storage+ ({specs['storage']}GB)")
-        if bigger_screen:
-            notes.append(f"Screen+ ({specs['screen_size']}\")")
-        if better_resolution:
-            notes.append(f"Res+ ({specs['resolution']})")
+        if kit_mode == 'Optional' and kit_val != 'Any':
+            detected_sticks = specs.get('stick_count', 0)
+            if detected_sticks > 0:
+                if ('Single' in kit_val and detected_sticks == 1) or \
+                   ('2-Stick' in kit_val and detected_sticks == 2) or \
+                   ('4-Stick' in kit_val and detected_sticks == 4):
+                    opt_score += 1
 
-        # Score based on upgrades vs current computer
-        score = 0
-        if better_cpu:
-            score += 2
-        if better_ram:
-            score += 2
-        if better_storage:
-            score += 1
-        if bigger_screen:
-            score += 1
-        if better_resolution:
-            score += 1
-        if saving > 0:
-            score += 1
+        if brand_mode == 'Optional' and brand_val != 'Any':
+            if specs.get('brand', '').lower() == brand_val.lower():
+                opt_score += 1
 
-        deal = {
-            'name': name,
-            'price': price,
-            'saving': saving,
-            'specs': specs,
-            'condition': condition,
-            'notes': notes,
-            'score': score,
-            'url': url,
-            'sku': sku,
-            'source': p.get('source', ''),
-            'is_upgrade': better_cpu or better_ram or better_storage
-        }
+        if speed_mode == 'Optional' and speed_val > 0:
+            if specs.get('ram_speed_mhz', 0) >= speed_val:
+                opt_score += 1
 
-        deals.append(deal)
+        if cl_mode == 'Optional' and cl_val > 0:
+            detected_cl = specs.get('cas_latency', 0)
+            if 0 < detected_cl <= cl_val:
+                opt_score += 1
 
-    deals.sort(key=lambda x: (-x['score'], x['price']))
-    return deals, skipped
+        if price_mode == 'Optional' and price_val > 0:
+            if p.get('price', 0) <= price_val:
+                opt_score += 2
+
+        filtered.append(p)
+        optional_scores[id(p)] = opt_score
+
+    return filtered, optional_scores, skipped
 
 
-def generate_santa_wishlist(deals, current_specs, top_n=3):
-    """Generate the festive Christmas wishlist HTML."""
-    top_deals = deals[:top_n]
-
-    # Generate items HTML
-    items_html = ""
-    titles = ["The 'Best Value' Upgrade", "The 'Ultimate Power' Beast", "The Premium Choice"]
-    descriptions = [
-        "This is a great balance of performance and price!",
-        "If you're feeling extra generous, this one is top-tier!",
-        "A solid choice with excellent specs!"
-    ]
-
-    for i, deal in enumerate(top_deals):
-        title = titles[i] if i < len(titles) else f"Great Option #{i+1}"
-        desc = descriptions[i] if i < len(descriptions) else "Another excellent upgrade option!"
-
-        savings_html = ""
-        if deal['saving'] > 0:
-            savings_html = f'<div class="savings">Save ~${deal["saving"]:.0f}!</div>'
-
-        # Build comparison text
-        comparisons = []
-        if deal['specs']['ram'] > current_specs['ram']:
-            ratio = deal['specs']['ram'] / current_specs['ram']
-            if ratio >= 4:
-                comparisons.append(f"{deal['specs']['ram']}GB (Quadruple my current!)")
-            elif ratio >= 2:
-                comparisons.append(f"{deal['specs']['ram']}GB (Double my current!)")
-            else:
-                comparisons.append(f"{deal['specs']['ram']}GB (More than mine!)")
-
-        specs_html = ""
-        condition = deal.get('condition', 'New')
-        if condition != 'New':
-            specs_html += f"<li><strong>Condition:</strong> {condition}</li>\n"
-        if deal['specs']['cpu_gen'] > 0:
-            specs_html += f"<li><strong>CPU:</strong> {deal['specs']['cpu_model']} ({deal['specs']['cpu_gen']}th Gen)</li>\n"
-        if deal['specs']['ram'] > 0:
-            ram_note = ""
-            if deal['specs']['ram'] > current_specs['ram']:
-                ratio = deal['specs']['ram'] / current_specs['ram']
-                if ratio >= 4:
-                    ram_note = " (Quadruple my current!)"
-                elif ratio >= 2:
-                    ram_note = " (Double my current!)"
-                else:
-                    ram_note = " (More than mine!)"
-            specs_html += f"<li><strong>RAM:</strong> {deal['specs']['ram']}GB{ram_note}</li>\n"
-        if deal['specs']['storage'] > 0:
-            storage_note = ""
-            if deal['specs']['storage'] > current_specs['storage']:
-                storage_note = " (More than my current!)"
-            specs_html += f"<li><strong>Storage:</strong> {deal['specs']['storage']}GB SSD{storage_note}</li>\n"
-        if deal['specs']['gpu'] != 'Integrated':
-            specs_html += f"<li><strong>GPU:</strong> {deal['specs']['gpu']}</li>\n"
-        if deal['specs']['screen_size'] > 0:
-            screen_text = f"{deal['specs']['screen_size']}\""
-            if deal['specs']['resolution'] != 'Unknown':
-                screen_text += f" {deal['specs']['resolution']}"
-            specs_html += f"<li><strong>Screen:</strong> {screen_text}</li>\n"
-
-        # Add condition badge in title if not new
-        condition_badge = f" ({condition})" if condition != 'New' else ""
-
-        items_html += f'''
-    <div class="item">
-        <h2>{i+1}. {title}{condition_badge}</h2>
-        <p><strong>{deal['name'][:60]}{'...' if len(deal['name']) > 60 else ''}</strong></p>
-        <p>{desc}</p>
-        <ul class="specs">
-            {specs_html}
-        </ul>
-        <div class="price-tag">${deal['price']:,.2f}</div>
-        {savings_html}
-        <a href="{deal['url']}" class="btn" target="_blank">View for Santa</a>
-    </div>
-'''
-
-    html_content = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Christmas Laptop Wishlist</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #b3000c;
-            color: #333;
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            justify-content: center;
-        }}
-        .container {{
-            background-color: #fff;
-            max-width: 800px;
-            width: 100%;
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-            border: 5px solid #228b22;
-            position: relative;
-        }}
-        .container::before {{
-            content: "❄️";
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            font-size: 30px;
-        }}
-        .container::after {{
-            content: "❄️";
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            font-size: 30px;
-        }}
-        h1 {{
-            text-align: center;
-            color: #b3000c;
-            font-family: 'Georgia', serif;
-            margin-bottom: 10px;
-        }}
-        p.intro {{
-            text-align: center;
-            font-size: 1.1em;
-            color: #555;
-            margin-bottom: 30px;
-        }}
-        .item {{
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            padding: 20px;
-            background-color: #f9f9f9;
-            transition: transform 0.2s;
-        }}
-        .item:hover {{
-            transform: scale(1.02);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }}
-        .item h2 {{
-            margin-top: 0;
-            color: #228b22;
-        }}
-        .specs {{
-            list-style-type: none;
-            padding: 0;
-            margin: 10px 0;
-        }}
-        .specs li {{
-            margin-bottom: 5px;
-            padding-left: 20px;
-            position: relative;
-        }}
-        .specs li::before {{
-            content: "🎁";
-            position: absolute;
-            left: 0;
-        }}
-        .price-tag {{
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #b3000c;
-            margin-top: 10px;
-        }}
-        .savings {{
-            font-size: 0.9em;
-            color: #2e8b57;
-            font-weight: bold;
-        }}
-        .btn {{
-            display: inline-block;
-            margin-top: 15px;
-            padding: 10px 20px;
-            background-color: #b3000c;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: bold;
-        }}
-        .btn:hover {{
-            background-color: #8b0000;
-        }}
-        .footer {{
-            text-align: center;
-            margin-top: 30px;
-            font-size: 0.9em;
-            color: #777;
-        }}
-    </style>
-</head>
-<body>
-
-<div class="container">
-    <h1>🎄 Dear Santa 🎄</h1>
-    <p class="intro">I've been very good this year (and my current laptop is getting old).<br>Here are the best deals I found that would be a perfect upgrade!</p>
-    {items_html}
-    <div class="footer">
-        <p>Milk and cookies will be waiting! 🥛🍪</p>
-    </div>
-</div>
-
-</body>
-</html>
-'''
-    return html_content
+def _display_ram_specs_compact(specs):
+    """Show RAM specs in compact format for Top Deals cards."""
+    parts = []
+    # Capacity with kit info
+    if specs.get('ram', 0) > 0:
+        cap_str = f"{specs['ram']}GB"
+        if specs.get('kit_config'):
+            cap_str += f" ({specs['kit_config']})"
+        parts.append(cap_str)
+    if specs.get('ram_type', 'Unknown') != 'Unknown':
+        type_str = specs['ram_type']
+        if specs.get('ram_speed_mhz', 0) > 0:
+            type_str += f"-{specs['ram_speed_mhz']}"
+        parts.append(type_str)
+    if specs.get('cas_latency', 0) > 0:
+        parts.append(f"CL{specs['cas_latency']}")
+    if specs.get('form_factor', 'Unknown') != 'Unknown':
+        parts.append(specs['form_factor'])
+    if specs.get('brand'):
+        parts.append(specs['brand'])
+    if parts:
+        st.markdown(f"🔧 {' | '.join(parts)}")
 
 
-# Main App
-st.title("🔬 Better Appraisal Laptop Lab")
-st.markdown("*A team-building app for learning AI Agent coding and contribution via GitHub, and a handy laptop deal finder! Just in time for Black Friday!*")
-st.caption("Previously: Best Buy Deal Finder")
+def _display_ram_specs_full(specs):
+    """Show all RAM specs in expander detail view."""
+    if specs.get('brand'):
+        st.markdown(f"**Brand:** {specs['brand']}")
+    if specs.get('ram', 0) > 0:
+        cap_str = f"{specs['ram']}GB"
+        if specs.get('kit_config'):
+            cap_str += f" ({specs['kit_config']})"
+        elif specs.get('stick_count', 0) == 1:
+            cap_str += " (Single Stick)"
+        st.markdown(f"**Capacity:** {cap_str}")
+    if specs.get('ram_type', 'Unknown') != 'Unknown':
+        type_str = specs['ram_type']
+        if specs.get('ram_speed_mhz', 0) > 0:
+            type_str += f"-{specs['ram_speed_mhz']}"
+        st.markdown(f"**Type:** {type_str}")
+    if specs.get('form_factor', 'Unknown') != 'Unknown':
+        st.markdown(f"**Form Factor:** {specs['form_factor']}")
+    if specs.get('cas_latency', 0) > 0:
+        st.markdown(f"**CAS Latency:** CL{specs['cas_latency']}")
+    if specs.get('voltage', 0) > 0:
+        st.markdown(f"**Voltage:** {specs['voltage']}V")
 
-# Sidebar - Instructions
+
+# ══════════════════════════════════════════════════════════════════
+# MAIN APP
+# ══════════════════════════════════════════════════════════════════
+
+st.title("🍁 Canada Tech Deal Tracker")
+st.markdown("*Track deals on laptops, desktops, RAM, and tech components across Canadian retailers.*")
+st.caption("v2.0.0 | Previously: Better Appraisal Laptop Lab")
+
+# Sidebar
 with st.sidebar:
     st.header("📋 How to Use")
     st.markdown("""
-    **Step 1:** Go to [Best Buy Canada Laptops](https://www.bestbuy.ca/en-ca/category/laptops-macbooks/20352)
+    **Search Tab:** Search Canadian retailers via Google Shopping API.
 
-    **Step 2:** Use filters to refine your search
+    **Upload Tab:** Upload a saved Best Buy Canada HTML page for analysis.
 
-    **Step 3:** Click **"Show More"** until all products load
+    **Tracked Products:** View products you've saved and their price history.
 
-    **Step 4:** Save the page:
-    - **Chrome:** ⋮ menu → Cast, save, and share → Save page as...
-    - **Firefox:** ≡ menu → Save Page As...
-    - **Edge:** ... menu → Save page as
-    - Or press `Ctrl+S` / `Cmd+S`
+    **Alerts:** Set up deal alerts with custom criteria.
 
-    **Step 5:** Upload the saved HTML file here
-
-    **Step 6:** Enter your current specs and click Analyze!
+    **Settings:** Configure email notifications and API keys.
     """)
-
     st.markdown("---")
-    st.markdown("### 🔍 Live Search (US)")
-    st.markdown("Use the **Live Search** tab to search US retailers (Best Buy, Amazon, Walmart) without saving pages!")
-
+    tracked_count = len(db.get_tracked_products())
+    alert_count = len(db.get_alerts())
+    st.metric("Tracked Products", tracked_count)
+    st.metric("Active Alerts", alert_count)
     st.markdown("---")
     st.markdown("Made with ❤️ | [GitHub](https://github.com/PaulERayburn/better-appraisal-laptop-lab)")
-    st.caption("v1.1.0")
 
-# Initialize session state (must be before tabs)
-if 'deals' not in st.session_state:
-    st.session_state['deals'] = None
-if 'current_specs' not in st.session_state:
-    st.session_state['current_specs'] = None
-if 'analyzed' not in st.session_state:
-    st.session_state['analyzed'] = False
+# Session state init
+for key in ['deals', 'current_specs', 'analyzed', 'search_deals']:
+    if key not in st.session_state:
+        st.session_state[key] = None if key != 'analyzed' else False
 
-# Main content - Tabs for different input methods
-tab1, tab2 = st.tabs(["🇨🇦 CANADA: Upload Saved Page", "🇺🇸 USA: Live Search"])
+# ── Tabs ──
+tab_search, tab_upload, tab_tracked, tab_alerts, tab_settings = st.tabs([
+    "🔍 Search Canada",
+    "📁 Upload HTML",
+    "📦 Tracked Products",
+    "🔔 Alerts",
+    "⚙️ Settings",
+])
 
-with tab1:
 
+# ═══════════════════════════════════════════
+# TAB 1: Search Canada (SerpApi)
+# ═══════════════════════════════════════════
+with tab_search:
+    st.subheader("Search Canadian Retailers")
+
+    col_query, col_cat = st.columns([3, 1])
+    with col_query:
+        search_query = st.text_input(
+            "Search for tech deals",
+            value="gaming laptop",
+            placeholder="e.g., DDR5 RAM 32GB, RTX 4070, gaming laptop"
+        )
+    with col_cat:
+        search_category = st.selectbox(
+            "Category",
+            options=['auto-detect'] + SUPPORTED_CATEGORIES,
+            index=0,
+            help="Auto-detect guesses from the product name"
+        )
+
+    # ── Category-specific filter panels ──
+    ram_filters = {}
+    general_filters = {}
+    is_ram_search = search_category == 'ram'
+
+    if is_ram_search:
+        st.markdown("### 🧠 RAM Filters")
+        st.caption("Set each filter's value, then choose **Must** (hard requirement) or **Optional** (prefer but don't exclude)")
+
+        def ram_filter_row(label, key, widget_fn, col_sizes=[3, 1]):
+            """Render a filter row with value + must/optional toggle."""
+            c_val, c_mode = st.columns(col_sizes)
+            with c_val:
+                value = widget_fn()
+            with c_mode:
+                mode = st.selectbox("", options=["Must", "Optional", "Off"],
+                                    key=f"rf_mode_{key}", label_visibility="collapsed")
+            return value, mode
+
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            f_cap, f_cap_mode = ram_filter_row("Capacity", "cap",
+                lambda: st.selectbox("Total Capacity",
+                    options=["Any", "8GB", "16GB", "32GB", "48GB", "64GB", "96GB", "128GB"],
+                    index=3, key="rf_cap", help="Total capacity (e.g., 2x16GB = 32GB total)"))
+            ram_filters['capacity'] = (0 if f_cap == "Any" else int(f_cap.replace("GB", "")), f_cap_mode)
+
+            f_kit, f_kit_mode = ram_filter_row("Kit Config", "kit",
+                lambda: st.selectbox("Kit Configuration",
+                    options=["Any", "Single Stick (1x)", "2-Stick Kit (2x)", "4-Stick Kit (4x)"],
+                    key="rf_kit", help="Single stick for easy upgrade, kits for dual-channel"))
+            ram_filters['kit_config'] = (f_kit, f_kit_mode)
+
+            f_type, f_type_mode = ram_filter_row("DDR Type", "type",
+                lambda: st.selectbox("DDR Type", options=["Any", "DDR4", "DDR5"], key="rf_type"))
+            ram_filters['ddr_type'] = (f_type, f_type_mode)
+
+            f_form, f_form_mode = ram_filter_row("Form Factor", "form",
+                lambda: st.selectbox("Form Factor", options=["Any", "SO-DIMM (Laptop)", "DIMM (Desktop)"], key="rf_form"))
+            ram_filters['form_factor'] = (f_form, f_form_mode)
+
+        with col_right:
+            brand_options = ["Any", "ADATA", "Corsair", "Crucial", "G.Skill", "HP",
+                             "Kingston", "Micron", "Mushkin", "Patriot", "PNY",
+                             "Samsung", "SK Hynix", "TeamGroup"]
+            f_brand, f_brand_mode = ram_filter_row("Brand", "brand",
+                lambda: st.selectbox("Brand", options=brand_options, key="rf_brand"))
+            ram_filters['brand'] = (f_brand, f_brand_mode)
+
+            # Common DDR4 speeds: 2133, 2400, 2666, 3000, 3200, 3600, 4000
+            # Common DDR5 speeds: 4800, 5200, 5600, 6000, 6400, 7200, 8000
+            speed_options = ["Any", "2133", "2400", "2666", "3000", "3200", "3600",
+                             "4000", "4800", "5200", "5600", "6000", "6400", "7200", "8000"]
+            f_speed, f_speed_mode = ram_filter_row("Min Speed", "speed",
+                lambda: st.selectbox("Min Speed (MHz)", options=speed_options, key="rf_speed",
+                    help="DDR4: typically 2133-3600 | DDR5: typically 4800-8000"))
+            ram_filters['min_speed'] = (0 if f_speed == "Any" else int(f_speed), f_speed_mode)
+
+            # Common CAS latencies: DDR4: CL14-CL22 | DDR5: CL28-CL40
+            cl_options = ["Any", "14", "15", "16", "18", "19", "22",
+                          "28", "30", "32", "34", "36", "38", "40"]
+            f_cl, f_cl_mode = ram_filter_row("Max CAS Latency", "cl",
+                lambda: st.selectbox("Max CAS Latency (CL)", options=cl_options, key="rf_cl",
+                    help="Lower = faster. DDR4: CL14-22 | DDR5: CL28-40"))
+            ram_filters['max_cl'] = (0 if f_cl == "Any" else int(f_cl), f_cl_mode)
+
+            f_price, f_price_mode = ram_filter_row("Max Price", "price",
+                lambda: st.number_input("Max Price ($CAD)", min_value=0.0, max_value=5000.0, value=0.0, step=25.0, key="rf_price",
+                                        help="0 = no limit"))
+            ram_filters['max_price'] = (f_price, f_price_mode)
+
+    else:
+        # General filters for laptops/desktops/other
+        col_current, col_minimum = st.columns(2)
+        with col_current:
+            st.markdown("**Your Current Specs** (for upgrade comparison)")
+            current_ram_search = st.number_input("Your RAM (GB)", min_value=4, max_value=128, value=16, key="s_ram")
+            current_storage_search = st.number_input("Your Storage (GB)", min_value=128, max_value=8000, value=512, key="s_storage")
+            current_cpu_search = st.number_input("Your CPU Gen", min_value=1, max_value=20, value=10, key="s_cpu")
+        with col_minimum:
+            st.markdown("**Minimum Requirements** (filter results)")
+            min_ram = st.number_input("Min RAM (GB)", min_value=0, max_value=128, value=16, key="s_min_ram")
+            min_storage = st.number_input("Min Storage (GB)", min_value=0, max_value=8000, value=256, key="s_min_storage")
+            min_cpu = st.number_input("Min CPU Gen", min_value=0, max_value=20, value=0, key="s_min_cpu")
+
+    search_show_all = st.checkbox("Show all results (skip filtering)", key="s_show_all")
+    search_button = st.button("🔍 Search Canada", type="primary")
+
+    if search_button:
+        api_key = get_serpapi_key(db)
+        if not api_key:
+            st.error("SerpApi key not configured. Go to the Settings tab to add it.")
+        else:
+            if is_ram_search:
+                current_specs_search = {'cpu_gen': 0, 'ram': 0, 'storage': 0}
+                min_specs = {'ram': 0, 'storage': 0, 'cpu_gen': 0}
+                st.session_state['ram_filters'] = ram_filters
+
+                # Auto-build a smart query from RAM filters
+                query_parts = []
+                # Use user query if it's more than just "ram"
+                if search_query.strip().lower() not in ('ram', 'memory', 'ddr4', 'ddr5', ''):
+                    query_parts.append(search_query.strip())
+                # Add filter values to query for better SerpApi results
+                cap_val, cap_mode = ram_filters.get('capacity', (0, 'Off'))
+                if cap_val > 0 and cap_mode != 'Off':
+                    query_parts.append(f"{cap_val}GB")
+                type_val, type_mode = ram_filters.get('ddr_type', ('Any', 'Off'))
+                if type_val != 'Any' and type_mode != 'Off':
+                    query_parts.append(type_val)
+                speed_val, speed_mode = ram_filters.get('min_speed', (0, 'Off'))
+                if speed_val > 0 and speed_mode != 'Off':
+                    query_parts.append(f"{speed_val}MHz")
+                form_val, form_mode = ram_filters.get('form_factor', ('Any', 'Off'))
+                if form_val != 'Any' and form_mode != 'Off':
+                    query_parts.append("SODIMM" if "SO-DIMM" in form_val else "DIMM desktop")
+                brand_val, brand_mode = ram_filters.get('brand', ('Any', 'Off'))
+                if brand_val != 'Any' and brand_mode != 'Off':
+                    query_parts.append(brand_val)
+                kit_val, kit_mode = ram_filters.get('kit_config', ('Any', 'Off'))
+                if kit_val != 'Any' and kit_mode != 'Off':
+                    if 'Single' in kit_val:
+                        query_parts.append("1x single stick")
+                if not query_parts:
+                    query_parts.append("RAM memory")
+                search_query = " ".join(query_parts)
+            else:
+                current_specs_search = {
+                    'cpu_gen': current_cpu_search,
+                    'ram': current_ram_search,
+                    'storage': current_storage_search,
+                }
+                min_specs = {
+                    'cpu_gen': min_cpu,
+                    'ram': min_ram,
+                    'storage': min_storage,
+                }
+
+            from scrapers.serpapi_shopping import search_products as serpapi_search, build_search_query
+            from scrapers.bestbuy_ca import search_products as bestbuy_search
+            if is_ram_search:
+                enhanced_query = search_query  # Already built from filters above
+            else:
+                enhanced_query = build_search_query(search_query, min_specs if not search_show_all else None)
+            st.info(f"Searching: **{enhanced_query}**")
+
+            cat = None if search_category == 'auto-detect' else search_category
+
+            with st.spinner("Searching Canadian retailers..."):
+                # Search both SerpApi (Google Shopping) and Best Buy Canada directly
+                products = []
+                sources_searched = []
+
+                # Best Buy Canada API (always available, no API key needed)
+                bb_products, bb_error = bestbuy_search(enhanced_query, category=cat)
+                if bb_products:
+                    products.extend(bb_products)
+                    sources_searched.append(f"Best Buy CA ({len(bb_products)})")
+                elif bb_error:
+                    st.warning(f"Best Buy CA: {bb_error}")
+
+                # SerpApi Google Shopping (requires API key)
+                if api_key:
+                    serp_products, serp_error = serpapi_search(enhanced_query, category=cat, api_key=api_key)
+                    if serp_products:
+                        products.extend(serp_products)
+                        sources_searched.append(f"Google Shopping ({len(serp_products)})")
+                    elif serp_error:
+                        st.warning(f"Google Shopping: {serp_error}")
+
+                # Deduplicate by name similarity (same product from multiple sources)
+                products = _deduplicate_products(products)
+
+                if sources_searched:
+                    st.caption(f"Sources: {' + '.join(sources_searched)}")
+
+            if not products:
+                st.error("No products found from any source.")
+            else:
+                if is_ram_search and not search_show_all:
+                    # Apply RAM-specific must/optional filtering
+                    filtered, optional_scores, skipped = _apply_ram_filters(products, ram_filters)
+                    # Sort by optional score (desc), then price (asc)
+                    filtered.sort(key=lambda x: (-optional_scores.get(id(x), 0), x.get('price', 0)))
+                    # Convert to deal format
+                    search_deals = []
+                    for p in filtered:
+                        specs = p.get('specs', {})
+                        saving = p.get('saving', 0)
+                        deal = {
+                            'name': p.get('name', ''), 'price': p.get('price', 0),
+                            'original_price': p.get('original_price'),
+                            'saving': saving, 'specs': specs,
+                            'condition': extract_condition(p.get('name', '')),
+                            'notes': [], 'score': optional_scores.get(id(p), 0),
+                            'url': p.get('url', ''), 'sku': p.get('retailer_sku', ''),
+                            'source': p.get('source_display', ''),
+                            'retailer': p.get('retailer', 'unknown'),
+                            'category': 'ram', 'is_upgrade': False,
+                            'thumbnail': p.get('thumbnail', ''),
+                        }
+                        if saving > 0:
+                            dpct = (saving / (p['price'] + saving)) * 100 if (p['price'] + saving) > 0 else 0
+                            deal['notes'].append(f"{dpct:.0f}% off")
+                        search_deals.append(deal)
+                    st.session_state['search_deals'] = search_deals
+                    st.session_state['search_skipped'] = skipped
+                else:
+                    search_deals, skipped = analyze_search_deals(
+                        products, current_specs_search,
+                        min_specs if not search_show_all else None,
+                        search_show_all
+                    )
+                    st.session_state['search_deals'] = search_deals
+                    st.session_state['search_skipped'] = skipped
+                st.session_state['search_current'] = current_specs_search
+
+    # Display search results
+    if st.session_state.get('search_deals'):
+        search_deals = st.session_state['search_deals']
+        skipped = st.session_state.get('search_skipped', 0)
+
+        msg = f"Found {len(search_deals)} products"
+        if skipped > 0:
+            msg += f" ({skipped} filtered out)"
+        st.success(msg)
+
+        if search_deals:
+            # Top 3
+            st.markdown("---")
+            st.header("🏆 Top Deals")
+            top_n = min(3, len(search_deals))
+            cols = st.columns(top_n)
+            medals = ["🥇", "🥈", "🥉"]
+
+            for i, (col, deal) in enumerate(zip(cols, search_deals[:top_n])):
+                with col:
+                    st.markdown(f"### {medals[i]} #{i+1}")
+                    source = deal.get('source', '')
+                    if source:
+                        st.markdown(f"🏪 **{source}**")
+                    condition = deal.get('condition', 'New')
+                    if condition != 'New':
+                        st.markdown(f"🏷️ **{condition}**")
+                    st.markdown(f"**{deal['name'][:55]}...**")
+                    st.markdown(f"💰 **${deal['price']:,.2f}**")
+                    if deal.get('saving', 0) > 0:
+                        st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
+
+                    # Show relevant specs based on category
+                    cat = deal.get('category', 'laptop')
+                    specs = deal.get('specs', {})
+                    if cat in ('laptop', 'desktop'):
+                        if specs.get('cpu_gen', 0) > 0:
+                            st.markdown(f"🔧 CPU Gen {specs['cpu_gen']} | {specs.get('ram', '?')}GB RAM")
+                    elif cat == 'ram':
+                        _display_ram_specs_compact(specs)
+
+                    if deal.get('url'):
+                        st.link_button("View Deal", deal['url'])
+
+                    if st.button(f"💾 Track", key=f"save_search_{i}"):
+                        save_deal_to_db(deal)
+                        st.success("Saved!")
+
+            # All results
+            st.markdown("---")
+            st.header(f"📊 All Results ({len(search_deals)})")
+            for i, deal in enumerate(search_deals):
+                source = deal.get('source', '')
+                condition = deal.get('condition', 'New')
+                source_badge = f" @ {source}" if source else ""
+                condition_badge = "" if condition == "New" else f" [{condition}]"
+                with st.expander(f"**{i+1}. {deal['name'][:60]}...**{condition_badge}{source_badge} — ${deal['price']:,.2f}"):
+                    if source:
+                        st.markdown(f"**Store:** {source}")
+
+                    cat = deal.get('category', 'laptop')
+                    specs = deal.get('specs', {})
+                    if cat in ('laptop', 'desktop'):
+                        st.markdown(f"**CPU:** {specs.get('cpu_model', '?')} (Gen {specs.get('cpu_gen', '?')})")
+                        st.markdown(f"**RAM:** {specs.get('ram', '?')}GB | **Storage:** {specs.get('storage', '?')}GB")
+                        st.markdown(f"**GPU:** {specs.get('gpu', 'Integrated')}")
+                    elif cat == 'ram':
+                        _display_ram_specs_full(specs)
+                    elif cat == 'cpu':
+                        st.markdown(f"**Model:** {specs.get('cpu_model', '?')}")
+                        if specs.get('core_count', 0) > 0:
+                            st.markdown(f"**Cores:** {specs['core_count']}")
+                    elif cat == 'gpu':
+                        st.markdown(f"**GPU:** {specs.get('gpu', '?')}")
+                        if specs.get('vram_gb', 0) > 0:
+                            st.markdown(f"**VRAM:** {specs['vram_gb']}GB")
+
+                    if deal.get('notes'):
+                        st.markdown(f"**{', '.join(deal['notes'])}**")
+
+                    col_link, col_save = st.columns([1, 1])
+                    with col_link:
+                        if deal.get('url'):
+                            st.link_button("🔗 View Deal", deal['url'])
+                    with col_save:
+                        if st.button(f"💾 Track This Product", key=f"save_all_{i}"):
+                            save_deal_to_db(deal)
+                            st.success("Saved to tracked products!")
+
+
+# ═══════════════════════════════════════════
+# TAB 2: Upload HTML (Best Buy Canada)
+# ═══════════════════════════════════════════
+with tab_upload:
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        st.subheader("📁 Upload Your Saved Page")
+        st.subheader("📁 Upload Best Buy Canada Page")
 
-        # Demo option for new users
         st.markdown("**New here?** Try the demo first!")
-        if st.button("🎮 Try Demo Data", key="demo_btn", help="Load sample Best Buy Canada data to test the app"):
+        if st.button("🎮 Try Demo Data", key="demo_btn"):
             st.session_state['use_demo'] = True
             st.rerun()
 
@@ -1034,217 +966,37 @@ with tab1:
         uploaded_file = st.file_uploader(
             "Choose the saved HTML file",
             type=['html', 'htm'],
-            help="Upload the HTML file you saved from Best Buy (US or Canada)"
+            help="Upload the HTML file you saved from Best Buy Canada"
         )
 
     with col2:
         st.header("⚙️ Your Current Specs")
         current_ram = st.number_input("RAM (GB)", min_value=1, max_value=128, value=16, key="upload_ram")
         current_storage = st.number_input("Storage (GB)", min_value=64, max_value=8000, value=512, key="upload_storage")
-        current_cpu_gen = st.number_input("CPU Generation", min_value=1, max_value=20, value=10,
-                                           help="e.g., 10 for Intel 10th gen i7-10750H", key="upload_cpu")
-        current_screen_size = st.number_input("Screen Size (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1,
-                                              help="e.g., 15.6 for a 15.6\" display", key="upload_screen")
+        current_cpu_gen = st.number_input("CPU Generation", min_value=1, max_value=20, value=10, key="upload_cpu")
+        current_screen_size = st.number_input("Screen Size (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1, key="upload_screen")
         current_resolution = st.selectbox("Screen Resolution",
                                           options=["HD", "HD+", "FHD", "FHD+", "QHD", "QHD+", "4K UHD"],
-                                          index=2,  # Default to FHD
-                                          help="HD=1366x768, FHD=1920x1080, QHD=2560x1440, 4K=3840x2160", key="upload_res")
+                                          index=2, key="upload_res")
         show_all = st.checkbox("Show all products (not just upgrades)", key="upload_show_all")
 
-with tab2:
-
-    # Search query input
-    search_query = st.text_input("Search for laptops", value="gaming laptop", placeholder="e.g., gaming laptop RTX 4060")
-
-    # Two columns: Current specs (for comparison) and Minimum requirements (for search)
-    col_current, col_minimum = st.columns(2)
-
-    with col_current:
-        st.subheader("💻 Your Current Computer")
-        st.caption("Used to show upgrade comparisons (e.g., 'RAM+ 32GB')")
-        current_ram_search = st.number_input("Your RAM (GB)", min_value=4, max_value=128, value=16, key="current_ram_search")
-        current_storage_search = st.number_input("Your Storage (GB)", min_value=128, max_value=8000, value=512, key="current_storage_search")
-        current_cpu_search = st.number_input("Your CPU Gen", min_value=1, max_value=20, value=10, key="current_cpu_search",
-                                              help="e.g., 10 for i7-10750H")
-        current_screen_search = st.number_input("Your Screen (inches)", min_value=10.0, max_value=20.0, value=15.6, step=0.1, key="current_screen_search")
-
-    with col_minimum:
-        st.subheader("🎯 Minimum Requirements")
-        st.caption("Filters search results & builds query")
-        min_ram = st.number_input("Min RAM (GB)", min_value=8, max_value=128, value=16, key="min_ram",
-                                  help="Laptops below this will be filtered out")
-        min_storage = st.number_input("Min Storage (GB)", min_value=256, max_value=8000, value=512, key="min_storage")
-        min_cpu = st.number_input("Min CPU Gen", min_value=1, max_value=20, value=11, key="min_cpu")
-        min_screen = st.number_input("Min Screen (inches)", min_value=10.0, max_value=20.0, value=15.0, step=0.1, key="min_screen")
-        min_resolution = st.selectbox("Min Resolution",
-                                      options=["HD", "HD+", "FHD", "FHD+", "QHD", "QHD+", "4K UHD"],
-                                      index=2, key="min_res")
-
-    search_show_all = st.checkbox("Show all results (skip minimum filtering)", key="search_show_all")
-    search_button = st.button("🔍 Search Laptops", type="primary")
-
-    # Handle live search
-    if search_button:
-        # Current specs (for comparison/upgrade notes)
-        current_specs_search = {
-            'cpu_gen': current_cpu_search,
-            'ram': current_ram_search,
-            'storage': current_storage_search,
-            'screen_size': current_screen_search,
-            'resolution': 'FHD'  # Default for comparison
-        }
-
-        # Minimum specs (for query building and filtering)
-        min_specs = {
-            'cpu_gen': min_cpu,
-            'ram': min_ram,
-            'storage': min_storage,
-            'screen_size': min_screen,
-            'resolution': min_resolution
-        }
-
-        # Show the enhanced query being used
-        enhanced_query = build_search_query(search_query, min_specs)
-        st.info(f"🔎 Searching: **{enhanced_query}**")
-
-        with st.spinner(f"Searching..."):
-            products, error = search_google_shopping(search_query, specs=min_specs)
-
-            if error:
-                st.error(error)
-            elif products:
-                # Use current_specs for comparison notes, min_specs for filtering
-                search_deals, skipped = analyze_deals_with_filters(
-                    products, current_specs_search, min_specs, search_show_all, "US"
-                )
-
-                st.session_state['search_deals'] = search_deals
-                st.session_state['search_current_specs'] = current_specs_search
-                st.session_state['search_min_specs'] = min_specs
-                st.session_state['search_count'] = len(products)
-                st.session_state['search_skipped'] = skipped
-                st.session_state['search_query_used'] = enhanced_query
-
-    # Display search results
-    if 'search_deals' in st.session_state and st.session_state['search_deals']:
-        search_deals = st.session_state['search_deals']
-        current_specs_display = st.session_state.get('search_current_specs', {})
-        skipped = st.session_state.get('search_skipped', 0)
-
-        if len(search_deals) == 0:
-            st.warning(f"No laptops matched your requirements ({skipped} filtered out). Try lowering your minimum specs or check 'Show all results'.")
-        elif len(search_deals) <= 3:
-            st.warning(f"🇺🇸 Found only {len(search_deals)} laptop(s) matching requirements ({skipped} filtered out). Consider lowering minimum specs for more options.")
-        else:
-            msg = f"🇺🇸 Found {len(search_deals)} laptops matching your requirements"
-            if skipped > 0:
-                msg += f" ({skipped} filtered out)"
-            st.success(msg)
-
-        if not search_deals:
-            pass  # Already showed warning above
-        else:
-            # Top 3 deals
-            st.markdown("---")
-            st.header("🏆 Top 3 Best Deals")
-
-            top_3 = search_deals[:3]
-            cols = st.columns(len(top_3))
-            medals = ["🥇", "🥈", "🥉"]
-
-            for i, (col, deal) in enumerate(zip(cols, top_3)):
-                with col:
-                    st.markdown(f"### {medals[i]} #{i+1}")
-                    # Show store source if available
-                    source = deal.get('source', '')
-                    if source:
-                        st.markdown(f"🏪 **{source}**")
-                    condition = deal.get('condition', 'New')
-                    if condition != 'New':
-                        st.markdown(f"🏷️ **{condition}**")
-                    st.markdown(f"**{deal['name'][:50]}...**")
-                    st.markdown(f"💰 **${deal['price']:,.2f}**")
-                    if deal['saving'] > 0:
-                        st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
-                    st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
-                    screen_info = []
-                    if deal['specs']['screen_size'] > 0:
-                        screen_info.append(f"{deal['specs']['screen_size']}\"")
-                    if deal['specs']['resolution'] != 'Unknown':
-                        screen_info.append(deal['specs']['resolution'])
-                    if screen_info:
-                        st.markdown(f"🖥️ {' '.join(screen_info)}")
-                    st.link_button("View Deal", deal['url'])
-
-            # Santa wishlist for search results
-            st.markdown("---")
-            st.header("🎄 Create Your Santa Wishlist")
-            num_items_search = st.slider("How many items?", 1, min(5, len(search_deals)), 3, key="search_wishlist_num")
-            wishlist_html_search = generate_santa_wishlist(search_deals, current_specs_display, num_items_search)
-
-            # Preview and download buttons side by side
-            col_preview, col_download = st.columns(2)
-            with col_preview:
-                if st.button("👀 Preview Wishlist", key="search_preview_btn"):
-                    st.session_state['show_search_preview'] = True
-            with col_download:
-                st.download_button(
-                    label="🎅 Download Santa Wishlist",
-                    data=wishlist_html_search,
-                    file_name="santa_wishlist_us.html",
-                    mime="text/html",
-                    type="primary",
-                    key="search_wishlist_btn"
-                )
-
-            # Show preview if requested
-            if st.session_state.get('show_search_preview', False):
-                st.components.v1.html(wishlist_html_search, height=600, scrolling=True)
-
-            # All deals
-            st.markdown("---")
-            st.header(f"📊 All Results ({len(search_deals)})")
-            for i, deal in enumerate(search_deals):
-                condition = deal.get('condition', 'New')
-                source = deal.get('source', '')
-                source_badge = f" @ {source}" if source else ""
-                condition_badge = "" if condition == "New" else f" [{condition}]"
-                with st.expander(f"**{i+1}. {deal['name'][:55]}...**{condition_badge}{source_badge} — ${deal['price']:,.2f}"):
-                    if source:
-                        st.markdown(f"**Store:** {source}")
-                    st.markdown(f"**CPU:** {deal['specs']['cpu_model']} (Gen {deal['specs']['cpu_gen']})")
-                    st.markdown(f"**RAM:** {deal['specs']['ram']}GB | **Storage:** {deal['specs']['storage']}GB")
-                    st.markdown(f"**GPU:** {deal['specs']['gpu']}")
-                    if deal['specs']['screen_size'] > 0:
-                        st.markdown(f"**Screen:** {deal['specs']['screen_size']}\" {deal['specs']['resolution']}")
-                    st.link_button("🔗 View Deal", deal['url'])
-
-# Process uploaded file or demo (MUST be in tab1 scope)
-with tab1:
-    # Handle demo button
+    # Handle demo
     if st.session_state.get('use_demo', False):
         products = get_demo_products()
-        country = "CA"
         current_specs = {
-            'cpu_gen': current_cpu_gen,
-            'ram': current_ram,
-            'storage': current_storage,
-            'screen_size': current_screen_size,
+            'cpu_gen': current_cpu_gen, 'ram': current_ram,
+            'storage': current_storage, 'screen_size': current_screen_size,
             'resolution': current_resolution
         }
-
-        deals, skipped = analyze_deals(products, current_specs, show_all, country, filter_incomplete=False)
-
+        deals, skipped = analyze_deals(products, current_specs, show_all, filter_incomplete=False)
         st.session_state['deals'] = deals
         st.session_state['current_specs'] = current_specs
         st.session_state['analyzed'] = True
         st.session_state['product_count'] = len(products)
-        st.session_state['country'] = country
         st.session_state['is_demo'] = True
-        st.session_state['use_demo'] = False  # Reset so it doesn't keep reloading
+        st.session_state['use_demo'] = False
 
     if uploaded_file is not None:
-        # Analyze button
         if st.button("🔍 Analyze Deals", type="primary", key="upload_analyze"):
             with st.spinner("Analyzing products..."):
                 try:
@@ -1253,66 +1005,49 @@ with tab1:
                     uploaded_file.seek(0)
                     content = uploaded_file.read().decode('latin-1')
 
-                products, error, country = extract_products_from_html(content)
+                products, error = extract_products_from_html(content)
 
                 if error:
                     st.error(error)
                     st.session_state['analyzed'] = False
                 else:
                     current_specs = {
-                        'cpu_gen': current_cpu_gen,
-                        'ram': current_ram,
-                        'storage': current_storage,
-                        'screen_size': current_screen_size,
+                        'cpu_gen': current_cpu_gen, 'ram': current_ram,
+                        'storage': current_storage, 'screen_size': current_screen_size,
                         'resolution': current_resolution
                     }
-
-                    # For HTML uploads (Canada), don't filter incomplete since data is more reliable
-                    deals, skipped = analyze_deals(products, current_specs, show_all, country, filter_incomplete=False)
-
-                    # Store in session state
+                    deals, skipped = analyze_deals(products, current_specs, show_all, filter_incomplete=False)
                     st.session_state['deals'] = deals
                     st.session_state['current_specs'] = current_specs
                     st.session_state['analyzed'] = True
                     st.session_state['product_count'] = len(products)
-                    st.session_state['country'] = country
-                    st.session_state['is_demo'] = False  # Clear demo flag for real uploads
+                    st.session_state['is_demo'] = False
 
-    # Display results if we have analyzed data (outside the uploaded_file block so demo works too)
-    if st.session_state['analyzed'] and st.session_state['deals'] is not None:
+    # Display upload results
+    if st.session_state.get('analyzed') and st.session_state.get('deals') is not None:
         deals = st.session_state['deals']
         current_specs = st.session_state['current_specs']
-        country = st.session_state.get('country', 'CA')
         is_demo = st.session_state.get('is_demo', False)
-
-        country_flag = "🇺🇸" if country == "US" else "🇨🇦"
-        country_name = "US" if country == "US" else "Canada"
 
         if is_demo:
             st.success(f"🎮 **Demo Mode:** Showing {st.session_state.get('product_count', 0)} sample products")
-            st.info("This is sample data to help you explore the app. Upload your own Best Buy HTML file for real deals!")
+            st.info("This is sample data. Upload your own Best Buy Canada HTML file for real deals!")
         else:
-            st.success(f"{country_flag} Found {st.session_state.get('product_count', 0)} products from Best Buy {country_name}!")
-
-        if country == "US" and not is_demo:
-            st.warning("⚠️ **US Support is Experimental:** Best Buy US uses dynamic loading, so only some products may be captured. For best results, use Best Buy Canada.")
+            st.success(f"🇨🇦 Found {st.session_state.get('product_count', 0)} products from Best Buy Canada!")
 
         if not deals:
-            st.warning("No upgrades found matching your criteria. Try checking 'Show all products' or adjust your specs.")
+            st.warning("No upgrades found. Try checking 'Show all products' or adjust your specs.")
         else:
-            # TOP 3 DEALS SECTION
+            # Top 3
             st.markdown("---")
             st.header("🏆 Top 3 Best Deals")
-
             top_3 = deals[:3]
             cols = st.columns(len(top_3))
-
             medals = ["🥇", "🥈", "🥉"]
 
             for i, (col, deal) in enumerate(zip(cols, top_3)):
                 with col:
                     st.markdown(f"### {medals[i]} #{i+1}")
-                    # Show condition badge if not New
                     condition = deal.get('condition', 'New')
                     if condition != 'New':
                         st.markdown(f"🏷️ **{condition}**")
@@ -1321,7 +1056,6 @@ with tab1:
                     if deal['saving'] > 0:
                         st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
                     st.markdown(f"🔧 CPU Gen {deal['specs']['cpu_gen']} | {deal['specs']['ram']}GB RAM")
-                    # Screen info
                     screen_info = []
                     if deal['specs']['screen_size'] > 0:
                         screen_info.append(f"{deal['specs']['screen_size']}\"")
@@ -1330,40 +1064,15 @@ with tab1:
                     if screen_info:
                         st.markdown(f"🖥️ {' '.join(screen_info)}")
                     st.link_button("View Deal", deal['url'])
+                    if st.button(f"💾 Track", key=f"save_upload_{i}"):
+                        deal['retailer'] = 'bestbuy_ca'
+                        deal['category'] = 'laptop'
+                        save_deal_to_db(deal)
+                        st.success("Saved!")
 
-            # SANTA WISHLIST SECTION
-            st.markdown("---")
-            st.header("🎄 Create Your Santa Wishlist")
-            st.markdown("Generate a festive wishlist to share with family (or Santa)!")
-
-            num_items = st.slider("How many items in your wishlist?", 1, min(5, len(deals)), 3, key="upload_wishlist_num")
-
-            # Generate wishlist HTML
-            wishlist_html = generate_santa_wishlist(deals, current_specs, num_items)
-
-            # Preview and download buttons side by side
-            col_preview, col_download = st.columns(2)
-            with col_preview:
-                if st.button("👀 Preview Wishlist", key="upload_preview_btn"):
-                    st.session_state['show_upload_preview'] = True
-            with col_download:
-                st.download_button(
-                    label="🎅 Download Santa Wishlist",
-                    data=wishlist_html,
-                    file_name="santa_wishlist.html",
-                    mime="text/html",
-                    type="primary",
-                    key="upload_wishlist_btn"
-                )
-
-            # Show preview if requested
-            if st.session_state.get('show_upload_preview', False):
-                st.components.v1.html(wishlist_html, height=600, scrolling=True)
-
-            # ALL DEALS TABLE
+            # All deals
             st.markdown("---")
             st.header(f"📊 All {'Products' if show_all else 'Upgrades'} ({len(deals)})")
-
             for i, deal in enumerate(deals):
                 condition = deal.get('condition', 'New')
                 condition_badge = "" if condition == "New" else f" [{condition}]"
@@ -1377,7 +1086,6 @@ with tab1:
                         st.markdown(f"**RAM:** {deal['specs']['ram']}GB")
                         st.markdown(f"**Storage:** {deal['specs']['storage']}GB")
                         st.markdown(f"**GPU:** {deal['specs']['gpu']}")
-                        # Screen specs
                         if deal['specs']['screen_size'] > 0:
                             st.markdown(f"**Screen:** {deal['specs']['screen_size']}\"")
                         if deal['specs']['resolution'] != 'Unknown':
@@ -1386,20 +1094,281 @@ with tab1:
                             st.markdown(f"**Upgrades:** {', '.join(deal['notes'])}")
                     with dcol2:
                         st.link_button("🔗 View on Best Buy", deal['url'])
+                        if st.button(f"💾 Track", key=f"save_upload_all_{i}"):
+                            deal['retailer'] = 'bestbuy_ca'
+                            deal['category'] = 'laptop'
+                            save_deal_to_db(deal)
+                            st.success("Saved!")
 
-    if not st.session_state['analyzed']:
-        st.info("👆 Upload a saved Best Buy HTML file or try the demo to get started!")
+    if not st.session_state.get('analyzed'):
+        st.info("👆 Upload a saved Best Buy Canada HTML file or try the demo to get started!")
 
-        # Demo section
-        with st.expander("ℹ️ What does this tool do?"):
-            st.markdown("""
-            This tool helps you find the best laptop upgrade deals by:
 
-            1. **Parsing** product data from a saved Best Buy webpage
-            2. **Extracting** specs (CPU, RAM, Storage, GPU, Screen) from product names
-            3. **Comparing** each laptop against your current computer
-            4. **Ranking** deals by upgrade value and price
-            5. **Creating** a festive wishlist to share with Santa! 🎅
+# ═══════════════════════════════════════════
+# TAB 3: Tracked Products
+# ═══════════════════════════════════════════
+with tab_tracked:
+    st.subheader("📦 Tracked Products")
 
-            **No accounts needed. No data stored. Everything runs in your browser!**
-            """)
+    # Filters
+    col_cat_filter, col_ret_filter = st.columns(2)
+    with col_cat_filter:
+        filter_category = st.selectbox("Filter by Category",
+                                       options=['All'] + SUPPORTED_CATEGORIES,
+                                       key="track_cat_filter")
+    with col_ret_filter:
+        filter_retailer = st.selectbox("Filter by Retailer",
+                                       options=['All'] + list(RETAILER_DISPLAY_NAMES.values()),
+                                       key="track_ret_filter")
+
+    # Map display name back to ID
+    retailer_id_filter = None
+    if filter_retailer != 'All':
+        for rid, rname in RETAILER_DISPLAY_NAMES.items():
+            if rname == filter_retailer:
+                retailer_id_filter = rid
+                break
+
+    products = db.get_tracked_products(
+        category=filter_category if filter_category != 'All' else None,
+        retailer=retailer_id_filter,
+    )
+
+    if not products:
+        st.info("No tracked products yet. Use the Search or Upload tabs to find deals, then click 'Track' to save them here.")
+    else:
+        st.markdown(f"**{len(products)} tracked products**")
+
+        for product in products:
+            price_stats = db.get_price_stats(product['id'])
+            current_price = price_stats.get('current_price', '?')
+            min_price = price_stats.get('min_price', '?')
+
+            retailer_name = RETAILER_DISPLAY_NAMES.get(product['retailer'], product['retailer'])
+            cat_emoji = {'laptop': '💻', 'desktop': '🖥️', 'ram': '🧠', 'cpu': '⚡',
+                         'gpu': '🎮', 'ssd': '💾'}.get(product['category'], '📦')
+
+            with st.expander(f"{cat_emoji} **{product['name'][:70]}...** — ${current_price:,.2f}" if isinstance(current_price, (int, float)) else f"{cat_emoji} **{product['name'][:70]}...**"):
+                col_info, col_price, col_actions = st.columns([3, 2, 1])
+
+                with col_info:
+                    st.markdown(f"**Retailer:** {retailer_name}")
+                    st.markdown(f"**Category:** {product['category'].title()}")
+                    if product.get('cpu_model'):
+                        st.markdown(f"**CPU:** {product['cpu_model']}")
+                    if product.get('ram_gb'):
+                        st.markdown(f"**RAM:** {product['ram_gb']}GB")
+                    if product.get('gpu') and product['gpu'] != 'Integrated':
+                        st.markdown(f"**GPU:** {product['gpu']}")
+                    st.markdown(f"**First seen:** {product['first_seen'][:10]}")
+
+                with col_price:
+                    if isinstance(current_price, (int, float)):
+                        st.metric("Current Price", f"${current_price:,.2f}")
+                    if isinstance(min_price, (int, float)):
+                        st.metric("Lowest Recorded", f"${min_price:,.2f}")
+
+                    # Price history chart
+                    history = db.get_price_history(product['id'])
+                    if len(history) > 1:
+                        import pandas as pd
+                        df = pd.DataFrame(history)
+                        df['checked_at'] = pd.to_datetime(df['checked_at'])
+                        df = df.set_index('checked_at')
+                        st.line_chart(df['price'], height=150)
+
+                with col_actions:
+                    if product.get('url') and product['url'] != '#':
+                        st.link_button("🔗 View", product['url'])
+                    if st.button("🗑️ Remove", key=f"del_product_{product['id']}"):
+                        db.delete_product(product['id'])
+                        st.rerun()
+
+
+# ═══════════════════════════════════════════
+# TAB 4: Alerts
+# ═══════════════════════════════════════════
+with tab_alerts:
+    st.subheader("🔔 Deal Alerts")
+    st.markdown("Get notified when products match your criteria.")
+
+    # Create new alert
+    with st.expander("➕ Create New Alert", expanded=False):
+        with st.form("create_alert_form"):
+            alert_name = st.text_input("Alert Name", placeholder="e.g., DDR5 RAM under $80")
+            alert_category = st.selectbox("Category", options=SUPPORTED_CATEGORIES, key="alert_cat")
+
+            col_a1, col_a2 = st.columns(2)
+            with col_a1:
+                alert_retailer = st.selectbox("Retailer",
+                                              options=['Any'] + list(RETAILER_DISPLAY_NAMES.values()),
+                                              key="alert_ret")
+                alert_keyword = st.text_input("Keyword (in product name)", placeholder="e.g., DDR5, RTX 4070")
+                alert_max_price = st.number_input("Max Price ($CAD)", min_value=0.0, value=0.0, step=10.0,
+                                                  help="0 = no limit")
+            with col_a2:
+                alert_min_ram = st.number_input("Min RAM (GB)", min_value=0, value=0, key="alert_min_ram")
+                alert_min_storage = st.number_input("Min Storage (GB)", min_value=0, value=0, key="alert_min_storage")
+                alert_min_cpu = st.number_input("Min CPU Gen", min_value=0, value=0, key="alert_min_cpu")
+                alert_ram_type = st.selectbox("RAM Type", options=['Any', 'DDR4', 'DDR5'], key="alert_ram_type")
+
+            st.markdown("**Price Drop Triggers** (notify when price drops)")
+            col_drop1, col_drop2 = st.columns(2)
+            with col_drop1:
+                alert_drop_pct = st.number_input("Price drop % threshold", min_value=0.0, value=0.0, step=5.0)
+            with col_drop2:
+                alert_drop_abs = st.number_input("Price drop $ threshold", min_value=0.0, value=0.0, step=10.0)
+
+            alert_cooldown = st.number_input("Cooldown (hours between notifications)", min_value=1, value=24)
+
+            submitted = st.form_submit_button("Create Alert", type="primary")
+            if submitted and alert_name:
+                # Map retailer display name to ID
+                ret_id = None
+                if alert_retailer != 'Any':
+                    for rid, rname in RETAILER_DISPLAY_NAMES.items():
+                        if rname == alert_retailer:
+                            ret_id = rid
+                            break
+
+                alert_dict = {
+                    'name': alert_name,
+                    'category': alert_category,
+                    'retailer': ret_id,
+                    'keyword': alert_keyword or None,
+                    'max_price': alert_max_price if alert_max_price > 0 else None,
+                    'min_ram_gb': alert_min_ram if alert_min_ram > 0 else None,
+                    'min_storage_gb': alert_min_storage if alert_min_storage > 0 else None,
+                    'min_cpu_gen': alert_min_cpu if alert_min_cpu > 0 else None,
+                    'ram_type': alert_ram_type if alert_ram_type != 'Any' else None,
+                    'price_drop_pct': alert_drop_pct if alert_drop_pct > 0 else None,
+                    'price_drop_abs': alert_drop_abs if alert_drop_abs > 0 else None,
+                    'cooldown_hours': alert_cooldown,
+                }
+                db.create_alert(alert_dict)
+                st.success(f"Alert '{alert_name}' created!")
+                st.rerun()
+
+    # List existing alerts
+    alerts = db.get_alerts(active_only=False)
+    if not alerts:
+        st.info("No alerts yet. Create one above to get notified about deals!")
+    else:
+        for alert in alerts:
+            status_icon = "🟢" if alert['is_active'] else "🔴"
+            with st.expander(f"{status_icon} **{alert['name']}** — {alert['category'].title()}"):
+                col_details, col_actions = st.columns([3, 1])
+
+                with col_details:
+                    if alert.get('retailer'):
+                        st.markdown(f"**Retailer:** {RETAILER_DISPLAY_NAMES.get(alert['retailer'], alert['retailer'])}")
+                    if alert.get('keyword'):
+                        st.markdown(f"**Keyword:** {alert['keyword']}")
+                    if alert.get('max_price'):
+                        st.markdown(f"**Max Price:** ${alert['max_price']:,.2f}")
+                    if alert.get('min_ram_gb'):
+                        st.markdown(f"**Min RAM:** {alert['min_ram_gb']}GB")
+                    if alert.get('min_storage_gb'):
+                        st.markdown(f"**Min Storage:** {alert['min_storage_gb']}GB")
+                    if alert.get('min_cpu_gen'):
+                        st.markdown(f"**Min CPU Gen:** {alert['min_cpu_gen']}")
+                    if alert.get('ram_type'):
+                        st.markdown(f"**RAM Type:** {alert['ram_type']}")
+                    if alert.get('price_drop_pct'):
+                        st.markdown(f"**Price drop trigger:** {alert['price_drop_pct']}%")
+                    if alert.get('price_drop_abs'):
+                        st.markdown(f"**Price drop trigger:** ${alert['price_drop_abs']:.0f}")
+                    st.markdown(f"**Cooldown:** {alert['cooldown_hours']}h")
+                    if alert.get('last_triggered'):
+                        st.markdown(f"**Last triggered:** {alert['last_triggered'][:19]}")
+
+                with col_actions:
+                    if st.button("Toggle", key=f"toggle_alert_{alert['id']}"):
+                        new_status = db.toggle_alert(alert['id'])
+                        st.rerun()
+                    if st.button("🗑️ Delete", key=f"del_alert_{alert['id']}"):
+                        db.delete_alert(alert['id'])
+                        st.rerun()
+
+    # Recent notifications
+    st.markdown("---")
+    st.subheader("📬 Recent Notifications")
+    notifications = db.get_recent_notifications(limit=20)
+    if not notifications:
+        st.info("No notifications sent yet.")
+    else:
+        for n in notifications:
+            status = "✅" if n['success'] else "❌"
+            st.markdown(f"{status} **{n.get('alert_name', '?')}** — {n.get('product_name', '?')[:50]} — {n['sent_at'][:19]}")
+
+
+# ═══════════════════════════════════════════
+# TAB 5: Settings
+# ═══════════════════════════════════════════
+with tab_settings:
+    st.subheader("⚙️ Settings")
+
+    settings = db.get_all_settings()
+
+    # SerpApi
+    st.markdown("### 🔑 SerpApi Configuration")
+    st.markdown("Get a free API key at [serpapi.com](https://serpapi.com/) (100 searches/month free)")
+    serpapi_key = st.text_input("SerpApi Key", value=settings.get('serpapi_key', ''), type="password", key="set_serpapi")
+    if st.button("Save API Key"):
+        db.set_setting('serpapi_key', serpapi_key)
+        st.success("SerpApi key saved!")
+
+    st.markdown("---")
+
+    # Email
+    st.markdown("### 📧 Email Notification Settings")
+    st.markdown("For Gmail, use an [App Password](https://myaccount.google.com/apppasswords) (not your regular password)")
+
+    with st.form("email_settings_form"):
+        email_smtp = st.text_input("SMTP Server", value=settings.get('email_smtp_server', 'smtp.gmail.com'))
+        email_port = st.text_input("SMTP Port", value=settings.get('email_smtp_port', '587'))
+        email_from = st.text_input("From Email", value=settings.get('email_from', ''))
+        email_to = st.text_input("To Email (notifications sent here)", value=settings.get('email_to', ''))
+        email_password = st.text_input("Email Password / App Password", value=settings.get('email_password', ''), type="password")
+
+        save_email = st.form_submit_button("Save Email Settings")
+        if save_email:
+            db.set_setting('email_smtp_server', email_smtp)
+            db.set_setting('email_smtp_port', email_port)
+            db.set_setting('email_from', email_from)
+            db.set_setting('email_to', email_to)
+            db.set_setting('email_password', email_password)
+            st.success("Email settings saved!")
+
+    # Test email
+    if st.button("📧 Send Test Email"):
+        try:
+            from notifications import send_test_email
+            success = send_test_email(
+                smtp_server=settings.get('email_smtp_server', 'smtp.gmail.com'),
+                smtp_port=int(settings.get('email_smtp_port', '587')),
+                from_addr=settings.get('email_from', ''),
+                password=settings.get('email_password', ''),
+                to_addr=settings.get('email_to', ''),
+            )
+            if success:
+                st.success("Test email sent! Check your inbox.")
+            else:
+                st.error("Failed to send test email. Check your settings.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    st.markdown("---")
+    st.markdown("### ⏰ Automated Checking")
+    check_interval = st.number_input(
+        "Check interval (minutes)",
+        min_value=60, max_value=1440,
+        value=int(settings.get('check_interval_minutes', '360')),
+        step=60,
+        help="How often the scheduled checker runs (configured via Windows Task Scheduler)"
+    )
+    if st.button("Save Interval"):
+        db.set_setting('check_interval_minutes', str(check_interval))
+        st.success("Saved!")
+
+    st.info("To enable automated checking, set up `deal_checker.py` in Windows Task Scheduler. See the README for instructions.")
