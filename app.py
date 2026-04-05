@@ -23,7 +23,7 @@ from scrapers import identify_retailer
 # Page config
 st.set_page_config(
     page_title="Canada Tech Deal Tracker",
-    page_icon="🍁",
+    page_icon="💻",
     layout="wide"
 )
 
@@ -1396,21 +1396,19 @@ def _display_ram_specs_full(specs):
 # MAIN APP
 # ══════════════════════════════════════════════════════════════════
 
-st.title("🍁 Tech Deal Tracker")
-st.markdown("*Track deals on laptops, desktops, RAM, and tech components across Canadian and US retailers.*")
-st.caption("v2.1.0 | Previously: Better Appraisal Laptop Lab")
+st.title("💻 Tech Deal Tracker")
+st.markdown("*Track deals on laptops, desktops, RAM, and tech components across retailers.*")
+st.caption("v2.1.0")
 
 # Sidebar
 with st.sidebar:
     st.header("📋 How to Use")
     st.markdown("""
-    **Search Canada:** Search Canadian retailers. Toggle to include US deals with shipping estimates.
+    **My System:** Detect your specs and get upgrade recommendations.
 
-    **Search USA:** Search US retailers for local US shopping.
+    **Search Canada / USA:** Search retailers with smart filters. Toggle cross-border deals.
 
-    **Upload HTML:** Upload a saved Best Buy Canada page for analysis.
-
-    **Tracked / Alerts / Settings:** Track products, set alerts, configure email.
+    **Tracked / Alerts:** Save products, track prices, get notified.
     """)
     st.markdown("---")
     tracked_count = len(db.get_tracked_products())
@@ -1432,8 +1430,8 @@ _apply_pending_filters("us")
 # ── Tabs ──
 tab_mysystem, tab_search_ca, tab_search_us, tab_upload, tab_tracked, tab_alerts, tab_settings = st.tabs([
     "💻 My System",
-    "🇨🇦 Search Canada",
-    "🇺🇸 Search USA",
+    "🔍 Search Canada",
+    "🔍 Search USA",
     "📁 Upload HTML",
     "📦 Tracked Products",
     "🔔 Alerts",
@@ -1445,7 +1443,7 @@ tab_mysystem, tab_search_ca, tab_search_us, tab_upload, tab_tracked, tab_alerts,
 # TAB 1: Search Canada (SerpApi + Best Buy CA)
 # ═══════════════════════════════════════════
 with tab_search_ca:
-    st.subheader("Search Canadian Retailers")
+    st.subheader("Search Canada")
 
     # Show detected specs summary if available
     if st.session_state.get('detected_specs'):
@@ -1480,7 +1478,7 @@ with tab_search_ca:
     with col_opts1:
         search_show_all = st.checkbox("Show all results (skip filtering)", key="s_show_all")
     with col_opts2:
-        include_us = st.checkbox("🇺🇸 Include US deals (with est. shipping)", key="s_include_us")
+        include_us = st.checkbox("Include cross-border US deals (with est. shipping)", key="s_include_us")
     with col_opts3:
         trusted_only = st.checkbox("🛡️ Trusted retailers only", value=True, key="s_trusted")
     search_button = st.button("🔍 Search Canada", type="primary")
@@ -1665,7 +1663,7 @@ with tab_search_ca:
                     trust = deal.get('trust', 'unknown')
                     trust_icon = {'trusted': '🛡️', 'suspicious': '⚠️', 'unknown': ''}.get(trust, '')
                     if source:
-                        flag = " 🇺🇸" if is_us else ""
+                        flag = " (US)" if is_us else ""
                         st.markdown(f"🏪 **{source}**{flag} {trust_icon}")
                     condition = deal.get('condition', 'New')
                     if condition != 'New':
@@ -1729,7 +1727,7 @@ with tab_search_ca:
                 source = deal.get('source', '')
                 condition = deal.get('condition', 'New')
                 is_us = deal.get('country') == 'us'
-                flag = " 🇺🇸" if is_us else ""
+                flag = " (US)" if is_us else ""
                 source_badge = f" @ {source}{flag}" if source else flag
                 condition_badge = "" if condition == "New" else f" [{condition}]"
                 price_str = f"${deal['price']:,.2f}" + (" USD" if is_us else "")
@@ -1786,8 +1784,8 @@ with tab_search_ca:
 # TAB 2: Search USA
 # ═══════════════════════════════════════════
 with tab_search_us:
-    st.subheader("🇺🇸 Search US Retailers")
-    st.caption("For US-based shopping. Prices in USD.")
+    st.subheader("Search USA")
+    st.caption("Prices in USD.")
 
     if st.session_state.get('detected_specs'):
         _render_my_system_bar(st.session_state['detected_specs'], "us")
@@ -2056,11 +2054,11 @@ with tab_mysystem:
 
             col_fill_ca, col_fill_us = st.columns(2)
             with col_fill_ca:
-                if st.button("🇨🇦 Fill Canada Search Filters", type="primary", key="fill_ca"):
+                if st.button("Fill Canada Search Filters", type="primary", key="fill_ca"):
                     _set_recommended_filters("ca", rec_specs, detected)
                     st.rerun()
             with col_fill_us:
-                if st.button("🇺🇸 Fill USA Search Filters", key="fill_us"):
+                if st.button("Fill USA Search Filters", key="fill_us"):
                     _set_recommended_filters("us", rec_specs, detected)
                     st.rerun()
 
@@ -2194,7 +2192,7 @@ with tab_upload:
             st.success(f"🎮 **Demo Mode:** Showing {st.session_state.get('product_count', 0)} sample products")
             st.info("This is sample data. Upload your own Best Buy Canada HTML file for real deals!")
         else:
-            st.success(f"🇨🇦 Found {st.session_state.get('product_count', 0)} products from Best Buy Canada!")
+            st.success(f"Found {st.session_state.get('product_count', 0)} products from Best Buy Canada!")
 
         if not deals:
             st.warning("No upgrades found. Try checking 'Show all products' or adjust your specs.")

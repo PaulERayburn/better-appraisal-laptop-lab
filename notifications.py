@@ -1,5 +1,5 @@
 """
-Notification system for the Canada Tech Deal Tracker.
+Notification system for the Tech Deal Tracker.
 
 Handles sending email notifications when deals match alert criteria.
 """
@@ -59,7 +59,7 @@ def send_test_email(smtp_server, smtp_port, from_addr, password, to_addr):
     text = "This is a test email from the Tech Deal Tracker. Your email settings are working!"
     html = """
     <html><body style="font-family: Arial, sans-serif; padding: 20px;">
-    <h2 style="color: #d32f2f;">🍁 Tech Deal Tracker</h2>
+    <h2 style="color: #d32f2f;">💻 Tech Deal Tracker</h2>
     <p>This is a test email. Your notification settings are working correctly!</p>
     <p style="color: #666;">You will receive deal alerts here when products match your alert criteria.</p>
     </body></html>
@@ -102,12 +102,12 @@ def format_deals_html(deals, alert_name):
 
     return f"""
     <html><body style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #d32f2f;">🍁 Deal Alert: {alert_name}</h2>
+        <h2 style="color: #d32f2f;">💻 Deal Alert: {alert_name}</h2>
         <p>The following {len(deals)} product(s) matched your alert criteria:</p>
         {items}
         <hr style="border: 1px solid #eee;">
         <p style="color: #999; font-size: 0.8em;">
-            Sent by Canada Tech Deal Tracker. Manage alerts in the app.
+            Sent by Tech Deal Tracker. Manage alerts in the app.
         </p>
     </body></html>
     """
