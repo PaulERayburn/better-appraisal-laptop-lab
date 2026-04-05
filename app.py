@@ -369,6 +369,117 @@ def get_demo_products():
 
 
 # ══════════════════════════════════════════════════════════════════
+# Reusable RAM filter panel
+# ══════════════════════════════════════════════════════════════════
+
+def render_ram_filters(key_prefix):
+    """Render the RAM filter panel with Must/Optional toggles.
+
+    Args:
+        key_prefix: Unique prefix for Streamlit widget keys (e.g., 'ca' or 'us')
+
+    Returns:
+        dict of filter_name -> (value, mode) tuples
+    """
+    st.markdown("### 🧠 RAM Filters")
+    st.caption("Set each filter's value, then choose **Must** (hard requirement) or **Optional** (prefer but don't exclude)")
+
+    ram_filters = {}
+
+    def _filter_row(label, key, widget_fn):
+        c_val, c_mode = st.columns([3, 1])
+        with c_val:
+            value = widget_fn()
+        with c_mode:
+            mode = st.selectbox("", options=["Must", "Optional", "Off"],
+                                key=f"{key_prefix}_rf_mode_{key}", label_visibility="collapsed")
+        return value, mode
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        f_cap, f_cap_mode = _filter_row("Capacity", "cap",
+            lambda: st.selectbox("Total Capacity",
+                options=["Any", "8GB", "16GB", "32GB", "48GB", "64GB", "96GB", "128GB"],
+                index=3, key=f"{key_prefix}_rf_cap", help="Total capacity (e.g., 2x16GB = 32GB total)"))
+        ram_filters['capacity'] = (0 if f_cap == "Any" else int(f_cap.replace("GB", "")), f_cap_mode)
+
+        f_kit, f_kit_mode = _filter_row("Kit Config", "kit",
+            lambda: st.selectbox("Kit Configuration",
+                options=["Any", "Single Stick (1x)", "2-Stick Kit (2x)", "4-Stick Kit (4x)"],
+                key=f"{key_prefix}_rf_kit", help="Single stick for easy upgrade, kits for dual-channel"))
+        ram_filters['kit_config'] = (f_kit, f_kit_mode)
+
+        f_type, f_type_mode = _filter_row("DDR Type", "type",
+            lambda: st.selectbox("DDR Type", options=["Any", "DDR4", "DDR5"], key=f"{key_prefix}_rf_type"))
+        ram_filters['ddr_type'] = (f_type, f_type_mode)
+
+        f_form, f_form_mode = _filter_row("Form Factor", "form",
+            lambda: st.selectbox("Form Factor", options=["Any", "SO-DIMM (Laptop)", "DIMM (Desktop)"],
+                                 key=f"{key_prefix}_rf_form"))
+        ram_filters['form_factor'] = (f_form, f_form_mode)
+
+    with col_right:
+        brand_options = ["Any", "ADATA", "Corsair", "Crucial", "G.Skill", "HP",
+                         "Kingston", "Micron", "Mushkin", "Patriot", "PNY",
+                         "Samsung", "SK Hynix", "TeamGroup"]
+        f_brand, f_brand_mode = _filter_row("Brand", "brand",
+            lambda: st.selectbox("Brand", options=brand_options, key=f"{key_prefix}_rf_brand"))
+        ram_filters['brand'] = (f_brand, f_brand_mode)
+
+        speed_options = ["Any", "2133", "2400", "2666", "3000", "3200", "3600",
+                         "4000", "4800", "5200", "5600", "6000", "6400", "7200", "8000"]
+        f_speed, f_speed_mode = _filter_row("Min Speed", "speed",
+            lambda: st.selectbox("Min Speed (MHz)", options=speed_options, key=f"{key_prefix}_rf_speed",
+                help="DDR4: typically 2133-3600 | DDR5: typically 4800-8000"))
+        ram_filters['min_speed'] = (0 if f_speed == "Any" else int(f_speed), f_speed_mode)
+
+        cl_options = ["Any", "14", "15", "16", "18", "19", "22",
+                      "28", "30", "32", "34", "36", "38", "40"]
+        f_cl, f_cl_mode = _filter_row("Max CAS Latency", "cl",
+            lambda: st.selectbox("Max CAS Latency (CL)", options=cl_options, key=f"{key_prefix}_rf_cl",
+                help="Lower = faster. DDR4: CL14-22 | DDR5: CL28-40"))
+        ram_filters['max_cl'] = (0 if f_cl == "Any" else int(f_cl), f_cl_mode)
+
+        f_price, f_price_mode = _filter_row("Max Price", "price",
+            lambda: st.number_input("Max Price", min_value=0.0, max_value=5000.0, value=0.0,
+                                    step=25.0, key=f"{key_prefix}_rf_price", help="0 = no limit"))
+        ram_filters['max_price'] = (f_price, f_price_mode)
+
+    return ram_filters
+
+
+def build_ram_query_from_filters(base_query, ram_filters):
+    """Auto-build a search query string from RAM filter values."""
+    query_parts = []
+    if base_query.strip().lower() not in ('ram', 'memory', 'ddr4', 'ddr5', ''):
+        query_parts.append(base_query.strip())
+
+    cap_val, cap_mode = ram_filters.get('capacity', (0, 'Off'))
+    if cap_val > 0 and cap_mode != 'Off':
+        query_parts.append(f"{cap_val}GB")
+    type_val, type_mode = ram_filters.get('ddr_type', ('Any', 'Off'))
+    if type_val != 'Any' and type_mode != 'Off':
+        query_parts.append(type_val)
+    speed_val, speed_mode = ram_filters.get('min_speed', (0, 'Off'))
+    if speed_val > 0 and speed_mode != 'Off':
+        query_parts.append(f"{speed_val}MHz")
+    form_val, form_mode = ram_filters.get('form_factor', ('Any', 'Off'))
+    if form_val != 'Any' and form_mode != 'Off':
+        query_parts.append("SODIMM" if "SO-DIMM" in form_val else "DIMM desktop")
+    brand_val, brand_mode = ram_filters.get('brand', ('Any', 'Off'))
+    if brand_val != 'Any' and brand_mode != 'Off':
+        query_parts.append(brand_val)
+    kit_val, kit_mode = ram_filters.get('kit_config', ('Any', 'Off'))
+    if kit_val != 'Any' and kit_mode != 'Off':
+        if 'Single' in kit_val:
+            query_parts.append("1x single stick")
+    if not query_parts:
+        query_parts.append("RAM memory")
+    return " ".join(query_parts)
+
+
+# ══════════════════════════════════════════════════════════════════
 # Product deduplication
 # ══════════════════════════════════════════════════════════════════
 
@@ -577,23 +688,21 @@ def _display_ram_specs_full(specs):
 # MAIN APP
 # ══════════════════════════════════════════════════════════════════
 
-st.title("🍁 Canada Tech Deal Tracker")
-st.markdown("*Track deals on laptops, desktops, RAM, and tech components across Canadian retailers.*")
-st.caption("v2.0.0 | Previously: Better Appraisal Laptop Lab")
+st.title("🍁 Tech Deal Tracker")
+st.markdown("*Track deals on laptops, desktops, RAM, and tech components across Canadian and US retailers.*")
+st.caption("v2.1.0 | Previously: Better Appraisal Laptop Lab")
 
 # Sidebar
 with st.sidebar:
     st.header("📋 How to Use")
     st.markdown("""
-    **Search Tab:** Search Canadian retailers via Google Shopping API.
+    **Search Canada:** Search Canadian retailers. Toggle to include US deals with shipping estimates.
 
-    **Upload Tab:** Upload a saved Best Buy Canada HTML page for analysis.
+    **Search USA:** Search US retailers for local US shopping.
 
-    **Tracked Products:** View products you've saved and their price history.
+    **Upload HTML:** Upload a saved Best Buy Canada page for analysis.
 
-    **Alerts:** Set up deal alerts with custom criteria.
-
-    **Settings:** Configure email notifications and API keys.
+    **Tracked / Alerts / Settings:** Track products, set alerts, configure email.
     """)
     st.markdown("---")
     tracked_count = len(db.get_tracked_products())
@@ -609,8 +718,9 @@ for key in ['deals', 'current_specs', 'analyzed', 'search_deals']:
         st.session_state[key] = None if key != 'analyzed' else False
 
 # ── Tabs ──
-tab_search, tab_upload, tab_tracked, tab_alerts, tab_settings = st.tabs([
-    "🔍 Search Canada",
+tab_search_ca, tab_search_us, tab_upload, tab_tracked, tab_alerts, tab_settings = st.tabs([
+    "🇨🇦 Search Canada",
+    "🇺🇸 Search USA",
     "📁 Upload HTML",
     "📦 Tracked Products",
     "🔔 Alerts",
@@ -619,9 +729,9 @@ tab_search, tab_upload, tab_tracked, tab_alerts, tab_settings = st.tabs([
 
 
 # ═══════════════════════════════════════════
-# TAB 1: Search Canada (SerpApi)
+# TAB 1: Search Canada (SerpApi + Best Buy CA)
 # ═══════════════════════════════════════════
-with tab_search:
+with tab_search_ca:
     st.subheader("Search Canadian Retailers")
 
     col_query, col_cat = st.columns([3, 1])
@@ -645,72 +755,7 @@ with tab_search:
     is_ram_search = search_category == 'ram'
 
     if is_ram_search:
-        st.markdown("### 🧠 RAM Filters")
-        st.caption("Set each filter's value, then choose **Must** (hard requirement) or **Optional** (prefer but don't exclude)")
-
-        def ram_filter_row(label, key, widget_fn, col_sizes=[3, 1]):
-            """Render a filter row with value + must/optional toggle."""
-            c_val, c_mode = st.columns(col_sizes)
-            with c_val:
-                value = widget_fn()
-            with c_mode:
-                mode = st.selectbox("", options=["Must", "Optional", "Off"],
-                                    key=f"rf_mode_{key}", label_visibility="collapsed")
-            return value, mode
-
-        col_left, col_right = st.columns(2)
-
-        with col_left:
-            f_cap, f_cap_mode = ram_filter_row("Capacity", "cap",
-                lambda: st.selectbox("Total Capacity",
-                    options=["Any", "8GB", "16GB", "32GB", "48GB", "64GB", "96GB", "128GB"],
-                    index=3, key="rf_cap", help="Total capacity (e.g., 2x16GB = 32GB total)"))
-            ram_filters['capacity'] = (0 if f_cap == "Any" else int(f_cap.replace("GB", "")), f_cap_mode)
-
-            f_kit, f_kit_mode = ram_filter_row("Kit Config", "kit",
-                lambda: st.selectbox("Kit Configuration",
-                    options=["Any", "Single Stick (1x)", "2-Stick Kit (2x)", "4-Stick Kit (4x)"],
-                    key="rf_kit", help="Single stick for easy upgrade, kits for dual-channel"))
-            ram_filters['kit_config'] = (f_kit, f_kit_mode)
-
-            f_type, f_type_mode = ram_filter_row("DDR Type", "type",
-                lambda: st.selectbox("DDR Type", options=["Any", "DDR4", "DDR5"], key="rf_type"))
-            ram_filters['ddr_type'] = (f_type, f_type_mode)
-
-            f_form, f_form_mode = ram_filter_row("Form Factor", "form",
-                lambda: st.selectbox("Form Factor", options=["Any", "SO-DIMM (Laptop)", "DIMM (Desktop)"], key="rf_form"))
-            ram_filters['form_factor'] = (f_form, f_form_mode)
-
-        with col_right:
-            brand_options = ["Any", "ADATA", "Corsair", "Crucial", "G.Skill", "HP",
-                             "Kingston", "Micron", "Mushkin", "Patriot", "PNY",
-                             "Samsung", "SK Hynix", "TeamGroup"]
-            f_brand, f_brand_mode = ram_filter_row("Brand", "brand",
-                lambda: st.selectbox("Brand", options=brand_options, key="rf_brand"))
-            ram_filters['brand'] = (f_brand, f_brand_mode)
-
-            # Common DDR4 speeds: 2133, 2400, 2666, 3000, 3200, 3600, 4000
-            # Common DDR5 speeds: 4800, 5200, 5600, 6000, 6400, 7200, 8000
-            speed_options = ["Any", "2133", "2400", "2666", "3000", "3200", "3600",
-                             "4000", "4800", "5200", "5600", "6000", "6400", "7200", "8000"]
-            f_speed, f_speed_mode = ram_filter_row("Min Speed", "speed",
-                lambda: st.selectbox("Min Speed (MHz)", options=speed_options, key="rf_speed",
-                    help="DDR4: typically 2133-3600 | DDR5: typically 4800-8000"))
-            ram_filters['min_speed'] = (0 if f_speed == "Any" else int(f_speed), f_speed_mode)
-
-            # Common CAS latencies: DDR4: CL14-CL22 | DDR5: CL28-CL40
-            cl_options = ["Any", "14", "15", "16", "18", "19", "22",
-                          "28", "30", "32", "34", "36", "38", "40"]
-            f_cl, f_cl_mode = ram_filter_row("Max CAS Latency", "cl",
-                lambda: st.selectbox("Max CAS Latency (CL)", options=cl_options, key="rf_cl",
-                    help="Lower = faster. DDR4: CL14-22 | DDR5: CL28-40"))
-            ram_filters['max_cl'] = (0 if f_cl == "Any" else int(f_cl), f_cl_mode)
-
-            f_price, f_price_mode = ram_filter_row("Max Price", "price",
-                lambda: st.number_input("Max Price ($CAD)", min_value=0.0, max_value=5000.0, value=0.0, step=25.0, key="rf_price",
-                                        help="0 = no limit"))
-            ram_filters['max_price'] = (f_price, f_price_mode)
-
+        ram_filters = render_ram_filters("ca")
     else:
         # General filters for laptops/desktops/other
         col_current, col_minimum = st.columns(2)
@@ -725,7 +770,13 @@ with tab_search:
             min_storage = st.number_input("Min Storage (GB)", min_value=0, max_value=8000, value=256, key="s_min_storage")
             min_cpu = st.number_input("Min CPU Gen", min_value=0, max_value=20, value=0, key="s_min_cpu")
 
-    search_show_all = st.checkbox("Show all results (skip filtering)", key="s_show_all")
+    col_opts1, col_opts2, col_opts3 = st.columns(3)
+    with col_opts1:
+        search_show_all = st.checkbox("Show all results (skip filtering)", key="s_show_all")
+    with col_opts2:
+        include_us = st.checkbox("🇺🇸 Include US deals (with est. shipping)", key="s_include_us")
+    with col_opts3:
+        trusted_only = st.checkbox("🛡️ Trusted retailers only", value=True, key="s_trusted")
     search_button = st.button("🔍 Search Canada", type="primary")
 
     if search_button:
@@ -737,35 +788,7 @@ with tab_search:
                 current_specs_search = {'cpu_gen': 0, 'ram': 0, 'storage': 0}
                 min_specs = {'ram': 0, 'storage': 0, 'cpu_gen': 0}
                 st.session_state['ram_filters'] = ram_filters
-
-                # Auto-build a smart query from RAM filters
-                query_parts = []
-                # Use user query if it's more than just "ram"
-                if search_query.strip().lower() not in ('ram', 'memory', 'ddr4', 'ddr5', ''):
-                    query_parts.append(search_query.strip())
-                # Add filter values to query for better SerpApi results
-                cap_val, cap_mode = ram_filters.get('capacity', (0, 'Off'))
-                if cap_val > 0 and cap_mode != 'Off':
-                    query_parts.append(f"{cap_val}GB")
-                type_val, type_mode = ram_filters.get('ddr_type', ('Any', 'Off'))
-                if type_val != 'Any' and type_mode != 'Off':
-                    query_parts.append(type_val)
-                speed_val, speed_mode = ram_filters.get('min_speed', (0, 'Off'))
-                if speed_val > 0 and speed_mode != 'Off':
-                    query_parts.append(f"{speed_val}MHz")
-                form_val, form_mode = ram_filters.get('form_factor', ('Any', 'Off'))
-                if form_val != 'Any' and form_mode != 'Off':
-                    query_parts.append("SODIMM" if "SO-DIMM" in form_val else "DIMM desktop")
-                brand_val, brand_mode = ram_filters.get('brand', ('Any', 'Off'))
-                if brand_val != 'Any' and brand_mode != 'Off':
-                    query_parts.append(brand_val)
-                kit_val, kit_mode = ram_filters.get('kit_config', ('Any', 'Off'))
-                if kit_val != 'Any' and kit_mode != 'Off':
-                    if 'Single' in kit_val:
-                        query_parts.append("1x single stick")
-                if not query_parts:
-                    query_parts.append("RAM memory")
-                search_query = " ".join(query_parts)
+                search_query = build_ram_query_from_filters(search_query, ram_filters)
             else:
                 current_specs_search = {
                     'cpu_gen': current_cpu_search,
@@ -810,8 +833,36 @@ with tab_search:
                     elif serp_error:
                         st.warning(f"Google Shopping: {serp_error}")
 
+                # US products (if cross-border toggle is on)
+                if include_us and api_key:
+                    us_products, us_error = serpapi_search(enhanced_query, category=cat, api_key=api_key, country='us')
+                    if us_products:
+                        # Tag US products for cross-border display
+                        from cross_border import get_usd_to_cad_rate, estimate_cad_total, ships_to_canada
+                        rate = get_usd_to_cad_rate()
+                        for p in us_products:
+                            p['country'] = 'us'
+                            p_cat = p.get('category', cat or 'other')
+                            p['cross_border'] = estimate_cad_total(p.get('price', 0), p_cat, rate)
+                            p['ships_to_canada'] = ships_to_canada(p.get('source_display', ''))
+                        products.extend(us_products)
+                        sources_searched.append(f"Google Shopping US ({len(us_products)})")
+                    elif us_error:
+                        st.warning(f"Google Shopping US: {us_error}")
+
                 # Deduplicate by name similarity (same product from multiple sources)
                 products = _deduplicate_products(products)
+
+                # Tag trust status and optionally filter
+                from scrapers import is_trusted_retailer
+                for p in products:
+                    p['trust'] = is_trusted_retailer(p.get('source_display', ''))
+                if trusted_only:
+                    before = len(products)
+                    products = [p for p in products if p.get('trust') != 'suspicious']
+                    filtered_untrusted = before - len(products)
+                    if filtered_untrusted > 0:
+                        st.caption(f"🛡️ {filtered_untrusted} suspicious seller(s) excluded")
 
                 if sources_searched:
                     st.caption(f"Sources: {' + '.join(sources_searched)}")
@@ -840,6 +891,10 @@ with tab_search:
                             'retailer': p.get('retailer', 'unknown'),
                             'category': 'ram', 'is_upgrade': False,
                             'thumbnail': p.get('thumbnail', ''),
+                            'country': p.get('country', 'ca'),
+                            'cross_border': p.get('cross_border'),
+                            'ships_to_canada': p.get('ships_to_canada'),
+                            'trust': p.get('trust', 'unknown'),
                         }
                         if saving > 0:
                             dpct = (saving / (p['price'] + saving)) * 100 if (p['price'] + saving) > 0 else 0
@@ -879,17 +934,30 @@ with tab_search:
                 with col:
                     st.markdown(f"### {medals[i]} #{i+1}")
                     source = deal.get('source', '')
+                    is_us = deal.get('country') == 'us'
+                    trust = deal.get('trust', 'unknown')
+                    trust_icon = {'trusted': '🛡️', 'suspicious': '⚠️', 'unknown': ''}.get(trust, '')
                     if source:
-                        st.markdown(f"🏪 **{source}**")
+                        flag = " 🇺🇸" if is_us else ""
+                        st.markdown(f"🏪 **{source}**{flag} {trust_icon}")
                     condition = deal.get('condition', 'New')
                     if condition != 'New':
                         st.markdown(f"🏷️ **{condition}**")
                     st.markdown(f"**{deal['name'][:55]}...**")
-                    st.markdown(f"💰 **${deal['price']:,.2f}**")
-                    if deal.get('saving', 0) > 0:
-                        st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
 
-                    # Show relevant specs based on category
+                    # Price display — cross-border vs local
+                    if is_us and deal.get('cross_border'):
+                        cb = deal['cross_border']
+                        st.markdown(f"💰 **${deal['price']:,.2f} USD** (~${cb['cad_price']:,.0f} CAD)")
+                        st.caption(f"Est. shipped: ${cb['cad_total_low']:,.0f}-${cb['cad_total_high']:,.0f} CAD")
+                        ship_status = deal.get('ships_to_canada', 'Unknown')
+                        ship_icon = {'Likely': '🟢', 'Unlikely': '🔴', 'Unknown': '🟡'}.get(ship_status, '⚪')
+                        st.markdown(f"📦 {ship_icon} Ships to Canada: **{ship_status}**")
+                    else:
+                        st.markdown(f"💰 **${deal['price']:,.2f}**")
+                        if deal.get('saving', 0) > 0:
+                            st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
+
                     cat = deal.get('category', 'laptop')
                     specs = deal.get('specs', {})
                     if cat in ('laptop', 'desktop'):
@@ -911,11 +979,24 @@ with tab_search:
             for i, deal in enumerate(search_deals):
                 source = deal.get('source', '')
                 condition = deal.get('condition', 'New')
-                source_badge = f" @ {source}" if source else ""
+                is_us = deal.get('country') == 'us'
+                flag = " 🇺🇸" if is_us else ""
+                source_badge = f" @ {source}{flag}" if source else flag
                 condition_badge = "" if condition == "New" else f" [{condition}]"
-                with st.expander(f"**{i+1}. {deal['name'][:60]}...**{condition_badge}{source_badge} — ${deal['price']:,.2f}"):
+                price_str = f"${deal['price']:,.2f}" + (" USD" if is_us else "")
+                with st.expander(f"**{i+1}. {deal['name'][:60]}...**{condition_badge}{source_badge} — {price_str}"):
                     if source:
-                        st.markdown(f"**Store:** {source}")
+                        st.markdown(f"**Store:** {source}{flag}")
+
+                    # Cross-border info
+                    if is_us and deal.get('cross_border'):
+                        cb = deal['cross_border']
+                        st.markdown(f"**Price:** ${deal['price']:,.2f} USD (~${cb['cad_price']:,.2f} CAD @ {cb['exchange_rate']:.4f})")
+                        st.markdown(f"**Est. shipping:** ${cb['shipping_usd_low']}-${cb['shipping_usd_high']} USD")
+                        st.markdown(f"**Est. CAD total:** ${cb['cad_total_low']:,.2f} - ${cb['cad_total_high']:,.2f}")
+                        ship_status = deal.get('ships_to_canada', 'Unknown')
+                        ship_icon = {'Likely': '🟢', 'Unlikely': '🔴', 'Unknown': '🟡'}.get(ship_status, '⚪')
+                        st.markdown(f"**Ships to Canada:** {ship_icon} {ship_status}")
 
                     cat = deal.get('category', 'laptop')
                     specs = deal.get('specs', {})
@@ -948,7 +1029,184 @@ with tab_search:
 
 
 # ═══════════════════════════════════════════
-# TAB 2: Upload HTML (Best Buy Canada)
+# TAB 2: Search USA
+# ═══════════════════════════════════════════
+with tab_search_us:
+    st.subheader("🇺🇸 Search US Retailers")
+    st.caption("For US-based shopping. Prices in USD.")
+
+    us_query = st.text_input("Search for tech deals", value="DDR4 32GB", key="us_query",
+                             placeholder="e.g., DDR5 RAM 32GB, RTX 4070, gaming laptop")
+    us_category = st.selectbox("Category", options=['auto-detect'] + SUPPORTED_CATEGORIES,
+                               index=0, key="us_cat")
+
+    # Show RAM filters when category is ram
+    us_ram_filters = {}
+    us_is_ram = us_category == 'ram'
+    if us_is_ram:
+        us_ram_filters = render_ram_filters("us")
+    else:
+        col_us_cur, col_us_min = st.columns(2)
+        with col_us_cur:
+            st.markdown("**Your Current Specs** (for upgrade comparison)")
+            us_cur_ram = st.number_input("Your RAM (GB)", min_value=4, max_value=128, value=16, key="us_cur_ram")
+            us_cur_storage = st.number_input("Your Storage (GB)", min_value=128, max_value=8000, value=512, key="us_cur_storage")
+            us_cur_cpu = st.number_input("Your CPU Gen", min_value=1, max_value=20, value=10, key="us_cur_cpu")
+        with col_us_min:
+            st.markdown("**Minimum Requirements** (filter results)")
+            us_min_ram = st.number_input("Min RAM (GB)", min_value=0, max_value=128, value=16, key="us_min_ram")
+            us_min_storage = st.number_input("Min Storage (GB)", min_value=0, max_value=8000, value=256, key="us_min_storage")
+            us_min_cpu = st.number_input("Min CPU Gen", min_value=0, max_value=20, value=0, key="us_min_cpu")
+
+    us_col1, us_col2 = st.columns(2)
+    with us_col1:
+        us_show_all = st.checkbox("Show all results (skip filtering)", key="us_show_all")
+    with us_col2:
+        us_trusted_only = st.checkbox("🛡️ Trusted retailers only", value=True, key="us_trusted")
+    us_search_btn = st.button("🔍 Search USA", type="primary", key="us_search_btn")
+
+    if us_search_btn:
+        api_key = get_serpapi_key(db)
+        if not api_key:
+            st.error("SerpApi key not configured. Go to the Settings tab to add it.")
+        else:
+            from scrapers.serpapi_shopping import search_products as serpapi_search
+
+            if us_is_ram:
+                us_search_q = build_ram_query_from_filters(us_query, us_ram_filters)
+            else:
+                from scrapers.serpapi_shopping import build_search_query
+                us_min_specs = {'cpu_gen': us_min_cpu, 'ram': us_min_ram, 'storage': us_min_storage}
+                us_search_q = build_search_query(us_query, us_min_specs if not us_show_all else None)
+
+            st.info(f"Searching: **{us_search_q}**")
+            us_cat = None if us_category == 'auto-detect' else us_category
+
+            with st.spinner("Searching US retailers..."):
+                us_products, us_error = serpapi_search(us_search_q, category=us_cat, api_key=api_key, country='us')
+
+            if us_error:
+                st.error(us_error)
+            elif us_products:
+                # Tag trust status and filter
+                from scrapers import is_trusted_retailer
+                for p in us_products:
+                    p['trust'] = is_trusted_retailer(p.get('source_display', ''))
+                if us_trusted_only:
+                    before = len(us_products)
+                    us_products = [p for p in us_products if p.get('trust') != 'suspicious']
+                    removed = before - len(us_products)
+                    if removed > 0:
+                        st.caption(f"🛡️ {removed} suspicious seller(s) excluded")
+
+                if us_is_ram and not us_show_all:
+                    filtered, opt_scores, skipped = _apply_ram_filters(us_products, us_ram_filters)
+                    filtered.sort(key=lambda x: (-opt_scores.get(id(x), 0), x.get('price', 0)))
+                    us_deals = []
+                    for p in filtered:
+                        specs = p.get('specs', {})
+                        saving = p.get('saving', 0)
+                        deal = {
+                            'name': p.get('name', ''), 'price': p.get('price', 0),
+                            'original_price': p.get('original_price'),
+                            'saving': saving, 'specs': specs,
+                            'condition': extract_condition(p.get('name', '')),
+                            'notes': [], 'score': opt_scores.get(id(p), 0),
+                            'url': p.get('url', ''), 'sku': p.get('retailer_sku', ''),
+                            'source': p.get('source_display', ''),
+                            'retailer': p.get('retailer', 'unknown'),
+                            'category': 'ram', 'is_upgrade': False,
+                            'thumbnail': p.get('thumbnail', ''),
+                        }
+                        if saving > 0:
+                            dpct = (saving / (p['price'] + saving)) * 100 if (p['price'] + saving) > 0 else 0
+                            deal['notes'].append(f"{dpct:.0f}% off")
+                        us_deals.append(deal)
+                    st.session_state['us_deals'] = us_deals
+                    st.session_state['us_skipped'] = skipped
+                else:
+                    us_cur_specs = {'cpu_gen': 0, 'ram': 0, 'storage': 0}
+                    if not us_is_ram:
+                        us_cur_specs = {'cpu_gen': us_cur_cpu, 'ram': us_cur_ram, 'storage': us_cur_storage}
+                    us_deals, us_skipped = analyze_search_deals(
+                        us_products, us_cur_specs,
+                        us_min_specs if not us_is_ram and not us_show_all else None,
+                        us_show_all
+                    )
+                    st.session_state['us_deals'] = us_deals
+                    st.session_state['us_skipped'] = us_skipped
+
+    # Display US results
+    if st.session_state.get('us_deals'):
+        us_deals = st.session_state['us_deals']
+        us_skipped = st.session_state.get('us_skipped', 0)
+
+        msg = f"Found {len(us_deals)} US products"
+        if us_skipped > 0:
+            msg += f" ({us_skipped} filtered out)"
+        st.success(msg)
+
+        if us_deals:
+            st.markdown("---")
+            st.header("🏆 Top US Deals")
+            top_n = min(3, len(us_deals))
+            cols = st.columns(top_n)
+            medals = ["🥇", "🥈", "🥉"]
+
+            for i, (col, deal) in enumerate(zip(cols, us_deals[:top_n])):
+                with col:
+                    st.markdown(f"### {medals[i]} #{i+1}")
+                    source = deal.get('source', '')
+                    if source:
+                        st.markdown(f"🏪 **{source}**")
+                    st.markdown(f"**{deal['name'][:55]}...**")
+                    st.markdown(f"💰 **${deal['price']:,.2f} USD**")
+                    if deal.get('saving', 0) > 0:
+                        st.markdown(f"🏷️ Save ${deal['saving']:.0f}")
+
+                    cat = deal.get('category', 'laptop')
+                    specs = deal.get('specs', {})
+                    if cat in ('laptop', 'desktop') and specs.get('cpu_gen', 0) > 0:
+                        st.markdown(f"🔧 CPU Gen {specs['cpu_gen']} | {specs.get('ram', '?')}GB RAM")
+                    elif cat == 'ram':
+                        _display_ram_specs_compact(specs)
+
+                    if deal.get('url'):
+                        st.link_button("View Deal", deal['url'])
+                    if st.button(f"💾 Track", key=f"save_us_{i}"):
+                        save_deal_to_db(deal)
+                        st.success("Saved!")
+
+            st.markdown("---")
+            st.header(f"📊 All US Results ({len(us_deals)})")
+            for i, deal in enumerate(us_deals):
+                source = deal.get('source', '')
+                source_badge = f" @ {source}" if source else ""
+                with st.expander(f"**{i+1}. {deal['name'][:60]}...**{source_badge} — ${deal['price']:,.2f} USD"):
+                    if source:
+                        st.markdown(f"**Store:** {source}")
+
+                    cat = deal.get('category', 'laptop')
+                    specs = deal.get('specs', {})
+                    if cat in ('laptop', 'desktop'):
+                        st.markdown(f"**CPU:** {specs.get('cpu_model', '?')} (Gen {specs.get('cpu_gen', '?')})")
+                        st.markdown(f"**RAM:** {specs.get('ram', '?')}GB | **Storage:** {specs.get('storage', '?')}GB")
+                        st.markdown(f"**GPU:** {specs.get('gpu', 'Integrated')}")
+                    elif cat == 'ram':
+                        _display_ram_specs_full(specs)
+
+                    col_link, col_save = st.columns([1, 1])
+                    with col_link:
+                        if deal.get('url'):
+                            st.link_button("🔗 View Deal", deal['url'])
+                    with col_save:
+                        if st.button(f"💾 Track", key=f"save_us_all_{i}"):
+                            save_deal_to_db(deal)
+                            st.success("Saved!")
+
+
+# ═══════════════════════════════════════════
+# TAB 3: Upload HTML (Best Buy Canada)
 # ═══════════════════════════════════════════
 with tab_upload:
     col1, col2 = st.columns([2, 1])
@@ -1344,19 +1602,21 @@ with tab_settings:
     if st.button("📧 Send Test Email"):
         try:
             from notifications import send_test_email
-            success = send_test_email(
+            send_test_email(
                 smtp_server=settings.get('email_smtp_server', 'smtp.gmail.com'),
                 smtp_port=int(settings.get('email_smtp_port', '587')),
                 from_addr=settings.get('email_from', ''),
                 password=settings.get('email_password', ''),
                 to_addr=settings.get('email_to', ''),
             )
-            if success:
-                st.success("Test email sent! Check your inbox.")
-            else:
-                st.error("Failed to send test email. Check your settings.")
+            st.success("Test email sent! Check your inbox.")
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Email failed: {e}")
+            if 'Username and Password not accepted' in str(e):
+                st.info("This usually means you need a Gmail **App Password**, not your regular password. "
+                        "Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) to create one.")
+            elif 'Authentication' in str(e) or 'auth' in str(e).lower():
+                st.info("Authentication failed. Make sure you're using a Gmail App Password and that 2-Step Verification is enabled.")
 
     st.markdown("---")
     st.markdown("### ⏰ Automated Checking")

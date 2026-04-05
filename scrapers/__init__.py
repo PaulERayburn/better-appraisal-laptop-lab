@@ -55,3 +55,72 @@ def identify_retailer(source_name):
         if pattern in source_lower:
             return retailer_id
     return None
+
+
+# ── Trusted Retailers ──
+# Known legitimate retailers in Canada and USA.
+# Products from unlisted sellers get flagged as unverified.
+
+TRUSTED_RETAILERS = {
+    # Canadian
+    'amazon.ca', 'amazon ca', 'amazon canada',
+    'best buy canada', 'best buy', 'bestbuy.ca', 'best buy canada marketplace',
+    'canada computers', 'canadacomputers',
+    'newegg.ca', 'newegg canada',
+    'memory express', 'memoryexpress',
+    'staples', 'staples canada',
+    'the source',
+    'london drugs',
+    'walmart.ca', 'walmart canada',
+    # US
+    'amazon.com', 'amazon',
+    'newegg.com', 'newegg',
+    'best buy', 'bestbuy.com',
+    'walmart', 'walmart.com',
+    'b&h photo', 'b&h', 'bhphotovideo',
+    'adorama',
+    'micro center', 'microcenter',
+    'gamestop',
+    'costco',
+    'target', 'target.com',
+    'cdw', 'cdw.com',
+    'dell', 'dell.com',
+    'hp', 'hp.com',
+    'lenovo', 'lenovo.com',
+    'crucial.com', 'crucial',
+    'corsair', 'corsair.com',
+    'kingston', 'kingston.com',
+}
+
+
+def is_trusted_retailer(source_name):
+    """Check if a source/store name is a known trusted retailer.
+
+    Returns: 'trusted', 'unknown', or 'suspicious'
+    """
+    if not source_name:
+        return 'unknown'
+    source_lower = source_name.lower().strip()
+
+    # Check against trusted list
+    for trusted in TRUSTED_RETAILERS:
+        if trusted in source_lower or source_lower in trusted:
+            return 'trusted'
+
+    # Flag suspicious patterns — foreign TLDs, eBay sub-sellers, etc.
+    suspicious_patterns = [
+        '.uy', '.ph', '.cn', '.ru', '.br', '.ar', '.mx',
+        'aliexpress', 'alibaba', 'dhgate', 'banggood', 'temu',
+        'wish.com',
+    ]
+    for pattern in suspicious_patterns:
+        if pattern in source_lower:
+            return 'suspicious'
+
+    # eBay is mixed — main eBay is OK but sub-sellers are unknown
+    if 'ebay' in source_lower:
+        if source_lower == 'ebay' or source_lower == 'ebay.com' or source_lower == 'ebay.ca':
+            return 'trusted'
+        return 'unknown'  # eBay sub-sellers
+
+    return 'unknown'

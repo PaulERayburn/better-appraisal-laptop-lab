@@ -40,19 +40,26 @@ def send_email_notification(smtp_server, smtp_port, from_addr, password,
 
 
 def send_test_email(smtp_server, smtp_port, from_addr, password, to_addr):
-    """Send a test email to verify settings."""
-    if not all([smtp_server, from_addr, password, to_addr]):
-        return False
+    """Send a test email to verify settings.
+
+    Returns True on success, raises Exception with details on failure.
+    """
+    if not from_addr:
+        raise ValueError("From email is empty")
+    if not to_addr:
+        raise ValueError("To email is empty")
+    if not password:
+        raise ValueError("Email password is empty")
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Canada Tech Deal Tracker - Test Email"
+    msg["Subject"] = "Tech Deal Tracker - Test Email"
     msg["From"] = from_addr
     msg["To"] = to_addr
 
-    text = "This is a test email from the Canada Tech Deal Tracker. Your email settings are working!"
+    text = "This is a test email from the Tech Deal Tracker. Your email settings are working!"
     html = """
     <html><body style="font-family: Arial, sans-serif; padding: 20px;">
-    <h2 style="color: #d32f2f;">🍁 Canada Tech Deal Tracker</h2>
+    <h2 style="color: #d32f2f;">🍁 Tech Deal Tracker</h2>
     <p>This is a test email. Your notification settings are working correctly!</p>
     <p style="color: #666;">You will receive deal alerts here when products match your alert criteria.</p>
     </body></html>
@@ -61,14 +68,12 @@ def send_test_email(smtp_server, smtp_port, from_addr, password, to_addr):
     msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))
 
-    try:
-        with smtplib.SMTP(smtp_server, int(smtp_port)) as server:
-            server.starttls()
-            server.login(from_addr, password)
-            server.sendmail(from_addr, to_addr, msg.as_string())
-        return True
-    except Exception:
-        return False
+    # Let exceptions propagate so the caller can show the actual error
+    with smtplib.SMTP(smtp_server, int(smtp_port)) as server:
+        server.starttls()
+        server.login(from_addr, password)
+        server.sendmail(from_addr, to_addr, msg.as_string())
+    return True
 
 
 def format_deals_html(deals, alert_name):

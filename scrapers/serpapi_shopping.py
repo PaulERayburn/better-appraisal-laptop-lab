@@ -1,7 +1,7 @@
 """
-SerpApi Google Shopping scraper for Canadian tech deals.
+SerpApi Google Shopping scraper for tech deals.
 
-Uses the Google Shopping engine with gl=ca for Canadian results.
+Uses the Google Shopping engine with configurable country (gl=ca or gl=us).
 This is the primary/universal data source since it aggregates
 results from all retailers.
 """
@@ -14,14 +14,15 @@ from scrapers import make_product, identify_retailer
 from spec_parser import extract_specs, categorize_product
 
 
-def search_products(query, category=None, api_key=None, max_results=40):
-    """Search Google Shopping Canada via SerpApi.
+def search_products(query, category=None, api_key=None, max_results=40, country='ca'):
+    """Search Google Shopping via SerpApi.
 
     Args:
         query: Search string (e.g., "DDR5 RAM 32GB")
         category: Product category hint for spec parsing. If None, auto-detected.
         api_key: SerpApi API key
         max_results: Maximum products to return
+        country: 'ca' for Canada, 'us' for United States
 
     Returns:
         (products_list, error_string_or_None)
@@ -34,7 +35,7 @@ def search_products(query, category=None, api_key=None, max_results=40):
         "q": query,
         "api_key": api_key,
         "num": max_results,
-        "gl": "ca",
+        "gl": country,
         "hl": "en",
         "direct_link": "true",
     }
@@ -101,6 +102,7 @@ def search_products(query, category=None, api_key=None, max_results=40):
             product['source_display'] = source
             product['thumbnail'] = item.get("thumbnail", "")
             product['saving'] = (original_price - price) if original_price else 0
+            product['country'] = country
 
             products.append(product)
 
