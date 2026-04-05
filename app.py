@@ -539,6 +539,570 @@ def _build_alert_from_ram_filters(ram_filters, search_query=''):
 
 
 # ══════════════════════════════════════════════════════════════════
+# "My System" bar and comparison helpers
+# ══════════════════════════════════════════════════════════════════
+
+def _render_my_system_bar(detected, key_prefix):
+    """Show a compact summary of detected specs at top of search tab."""
+    parts = []
+    if detected.get('cpu_name'):
+        cpu_short = detected['cpu_name']
+        # Shorten the CPU name
+        cpu_short = cpu_short.replace('Intel(R) Core(TM) ', '').replace(' CPU', '').replace('Processor', '').strip()
+        gen = detected.get('cpu_gen', 0)
+        parts.append(f"**CPU:** {cpu_short}" + (f" (Gen {gen})" if gen else ""))
+    if detected.get('ram_gb'):
+        ram_str = f"**RAM:** {detected['ram_gb']}GB"
+        if detected.get('ram_type'):
+            ram_str += f" {detected['ram_type']}"
+        parts.append(ram_str)
+    if detected.get('gpu'):
+        gpu = detected['gpu']
+        if len(gpu) > 30:
+            gpu = gpu[:30] + "..."
+        parts.append(f"**GPU:** {gpu}")
+    if detected.get('storage'):
+        total = sum(d['size_gb'] for d in detected['storage'])
+        total_str = f"{total}GB" if total < 1024 else f"{total / 1024:.1f}TB"
+        parts.append(f"**Storage:** {total_str}")
+
+    if parts:
+        with st.expander(f"💻 Your System: {' | '.join(parts)}", expanded=False):
+            st.caption("Detected from My System tab. Use this as reference when setting filters.")
+            _render_upgrade_suggestions(detected)
+
+
+def _render_upgrade_suggestions(detected):
+    """Show brief upgrade suggestions based on detected specs."""
+    suggestions = []
+
+    cpu_gen = detected.get('cpu_gen', 0)
+    if cpu_gen > 0 and cpu_gen < 12:
+        suggestions.append(f"**CPU (Gen {cpu_gen})** is {12 - cpu_gen} generations behind current. Gen 12+ recommended — expect 30-60% performance jump. Set Min CPU Gen to **12** (Must).")
+    elif cpu_gen >= 12:
+        suggestions.append(f"**CPU (Gen {cpu_gen})** is current. No urgent need to upgrade unless going to Gen 14 for efficiency.")
+
+    ram = detected.get('ram_gb', 0)
+    if ram > 0 and ram <= 8:
+        suggestions.append(f"**RAM ({ram}GB)** is very low for 2024. Upgrading to **16GB minimum**, ideally **32GB**, will make the biggest difference. Set Min RAM to **16** (Must).")
+    elif ram == 16:
+        suggestions.append(f"**RAM (16GB)** is adequate but 32GB helps with multitasking and future-proofing. Set Min RAM to **32** (Optional).")
+    elif ram >= 32:
+        suggestions.append(f"**RAM ({ram}GB)** is great. No upgrade needed unless doing AI/ML work.")
+
+    gpu = detected.get('gpu', '')
+    gpu_lower = gpu.lower()
+    if any(x in gpu_lower for x in ['intel', 'uhd', 'iris', 'integrated', 'radeon graphics']):
+        suggestions.append(f"**GPU (Integrated)** — no dedicated graphics. For gaming or creative work, an **RTX 4060** is the sweet spot (+$200-400). Set GPU to **RTX 4060** (Must).")
+    elif 'rtx 20' in gpu_lower or 'rtx 30' in gpu_lower or 'gtx' in gpu_lower:
+        suggestions.append(f"**GPU ({gpu})** is 1-2 generations old. RTX 4060+ gives a significant jump in performance and ray tracing. Set GPU to **RTX 4060** (Must) or **RTX 4070** (Optional).")
+    elif 'rtx 40' in gpu_lower:
+        suggestions.append(f"**GPU ({gpu})** is current gen. No need to upgrade unless going RTX 50-series.")
+
+    total_storage = sum(d['size_gb'] for d in detected.get('storage', []))
+    if total_storage > 0 and total_storage < 512:
+        suggestions.append(f"**Storage ({total_storage}GB)** is tight. 1TB SSD is the new standard. Set Min Storage to **512GB** (Must).")
+    elif total_storage >= 1024:
+        suggestions.append(f"**Storage ({total_storage / 1024:.1f}TB)** is solid. Set Min Storage to **1TB** (Optional) to match.")
+
+    if suggestions:
+        st.markdown("**Quick upgrade guide based on your system:**")
+        for s in suggestions:
+            st.markdown(f"- {s}")
+    else:
+        st.info("Go to the **My System** tab and click **Detect My Specs** to get personalized suggestions here.")
+
+
+def _render_deal_comparison(deal, detected):
+    """Render a 'How This Compares to Your System' section for a search result."""
+    specs = deal.get('specs', {})
+    comparisons = []
+
+    # CPU
+    my_gen = detected.get('cpu_gen', 0)
+    deal_gen = specs.get('cpu_gen', 0)
+    if my_gen > 0 and deal_gen > 0:
+        diff = deal_gen - my_gen
+        if diff > 0:
+            pct = diff * 15  # rough ~15% per gen improvement
+            comparisons.append(('CPU', f"Gen {my_gen}", f"Gen {deal_gen}", f"+{diff} generations (~{pct}% faster)", 'upgrade'))
+        elif diff == 0:
+            comparisons.append(('CPU', f"Gen {my_gen}", f"Gen {deal_gen}", "Same generation", 'same'))
+        else:
+            comparisons.append(('CPU', f"Gen {my_gen}", f"Gen {deal_gen}", "Older than yours", 'downgrade'))
+
+    # RAM
+    my_ram = detected.get('ram_gb', 0)
+    deal_ram = specs.get('ram', 0)
+    if my_ram > 0 and deal_ram > 0:
+        if deal_ram > my_ram:
+            ratio = deal_ram / my_ram
+            desc = f"{ratio:.0f}x your current" if ratio >= 2 else f"+{deal_ram - my_ram}GB more"
+            comparisons.append(('RAM', f"{my_ram}GB", f"{deal_ram}GB", desc, 'upgrade'))
+        elif deal_ram == my_ram:
+            comparisons.append(('RAM', f"{my_ram}GB", f"{deal_ram}GB", "Same", 'same'))
+        else:
+            comparisons.append(('RAM', f"{my_ram}GB", f"{deal_ram}GB", "Less than yours", 'downgrade'))
+
+    # GPU
+    my_gpu = detected.get('gpu', '')
+    deal_gpu = specs.get('gpu', 'Integrated')
+    if my_gpu and deal_gpu and deal_gpu != 'Integrated':
+        my_is_integrated = any(x in my_gpu.lower() for x in ['intel', 'uhd', 'iris', 'integrated'])
+        if my_is_integrated:
+            comparisons.append(('GPU', 'Integrated', deal_gpu, "Massive upgrade — dedicated GPU", 'upgrade'))
+        else:
+            # Simple tier comparison
+            my_tier = _gpu_tier(my_gpu)
+            deal_tier = _gpu_tier(deal_gpu)
+            if deal_tier > my_tier:
+                comparisons.append(('GPU', my_gpu, deal_gpu, f"Upgrade (+{deal_tier - my_tier} tier{'s' if deal_tier - my_tier > 1 else ''})", 'upgrade'))
+            elif deal_tier == my_tier:
+                comparisons.append(('GPU', my_gpu, deal_gpu, "Similar tier", 'same'))
+            else:
+                comparisons.append(('GPU', my_gpu, deal_gpu, "Lower tier", 'downgrade'))
+
+    # Storage
+    my_storage = sum(d['size_gb'] for d in detected.get('storage', []))
+    deal_storage = specs.get('storage', 0)
+    if my_storage > 0 and deal_storage > 0:
+        if deal_storage > my_storage:
+            comparisons.append(('Storage', _format_storage(my_storage), _format_storage(deal_storage), "More space", 'upgrade'))
+        elif deal_storage == my_storage:
+            comparisons.append(('Storage', _format_storage(my_storage), _format_storage(deal_storage), "Same", 'same'))
+        else:
+            comparisons.append(('Storage', _format_storage(my_storage), _format_storage(deal_storage), "Less space", 'downgrade'))
+
+    if not comparisons:
+        return
+
+    icons = {'upgrade': '🟢', 'same': '🟡', 'downgrade': '🔴'}
+    lines = []
+    for comp, mine, theirs, desc, status in comparisons:
+        lines.append(f"{icons[status]} **{comp}:** {mine} → {theirs} — {desc}")
+    st.markdown("**How this compares to your system:**")
+    for line in lines:
+        st.markdown(line)
+
+
+def _gpu_tier(gpu_name):
+    """Return numeric tier for GPU comparison. Higher = better."""
+    gpu = gpu_name.upper()
+    tiers = {
+        'GTX 1650': 1, 'GTX 1660': 2, 'RTX 2060': 3, 'RTX 2070': 4, 'RTX 2080': 5,
+        'RTX 3050': 2, 'RTX 3060': 4, 'RTX 3070': 5, 'RTX 3080': 6,
+        'RTX 4050': 3, 'RTX 4060': 5, 'RTX 4070': 6, 'RTX 4080': 7, 'RTX 4090': 8,
+        'RTX 5060': 6, 'RTX 5070': 7, 'RTX 5080': 8, 'RTX 5090': 9,
+        'RX 7600': 4, 'RX 7700': 5, 'RX 7800': 6,
+    }
+    for name, tier in tiers.items():
+        if name in gpu:
+            return tier
+    return 0
+
+
+def _format_storage(gb):
+    return f"{gb}GB" if gb < 1024 else f"{gb / 1024:.1f}TB"
+
+
+def _set_recommended_filters(prefix, rec_specs, detected):
+    """Stage recommended specs for filter auto-fill.
+
+    Compares recommendations against detected specs — never recommends
+    a downgrade from what the user already has.
+    Must call st.rerun() after this so values are applied on next cycle.
+    """
+    # Merge: take the higher of (recommended, current)
+    merged = dict(rec_specs)
+
+    # RAM — don't recommend less than current
+    current_ram = detected.get('ram_gb', 0)
+    if current_ram > merged.get('ram', 0):
+        merged['ram'] = current_ram
+
+    # CPU gen — don't recommend older
+    current_gen = detected.get('cpu_gen', 0)
+    if current_gen > merged.get('cpu_gen', 0):
+        merged['cpu_gen'] = current_gen
+
+    # GPU — don't recommend a downgrade
+    current_gpu = detected.get('gpu', '')
+    rec_gpu = merged.get('gpu', 'Integrated')
+    current_tier = _gpu_tier(current_gpu)
+    rec_tier = _gpu_tier(rec_gpu)
+    if rec_tier < current_tier:
+        # Find the next tier up from current, or keep current level
+        tier_to_gpu = {
+            3: 'RTX 4050', 4: 'RTX 4060', 5: 'RTX 4060',
+            6: 'RTX 4070', 7: 'RTX 4080', 8: 'RTX 4090',
+        }
+        # Recommend at least one tier above current
+        target_tier = current_tier + 1
+        merged['gpu'] = tier_to_gpu.get(target_tier, 'Any')
+
+    # Storage — don't recommend less
+    current_storage = sum(d.get('size_gb', 0) for d in detected.get('storage', []))
+    if current_storage > merged.get('storage', 0):
+        # Round up to nearest standard size
+        for size in [256, 512, 1024, 2048, 4096]:
+            if size >= current_storage:
+                merged['storage'] = size
+                break
+
+    st.session_state[f'_pending_fill_{prefix}'] = merged
+
+
+def _apply_pending_filters(prefix):
+    """Apply pending filter values before widgets render. Called at top of script."""
+    key = f'_pending_fill_{prefix}'
+    if key not in st.session_state:
+        return
+    rec_specs = st.session_state.pop(key)
+
+    rec_ram = str(rec_specs.get('ram', 16))
+    if rec_ram in ["8", "12", "16", "24", "32", "48", "64", "96", "128"]:
+        st.session_state[f"{prefix}_lf_ram"] = rec_ram
+    st.session_state[f"{prefix}_lf_mode_ram"] = "Must"
+
+    rec_storage = str(rec_specs.get('storage', 512))
+    if rec_storage in ["128", "256", "512", "1024", "2048", "4096"]:
+        st.session_state[f"{prefix}_lf_storage"] = rec_storage
+    st.session_state[f"{prefix}_lf_mode_storage"] = "Optional"
+
+    rec_cpu = str(rec_specs.get('cpu_gen', 12))
+    if rec_cpu in ["8", "9", "10", "11", "12", "13", "14"]:
+        st.session_state[f"{prefix}_lf_cpu"] = rec_cpu
+    st.session_state[f"{prefix}_lf_mode_cpu"] = "Must"
+
+    rec_gpu = rec_specs.get('gpu', 'Any')
+    valid_gpus = [
+        "Any", "RTX 3050", "RTX 4050", "RTX 3060", "RTX 4060", "RX 7600",
+        "RTX 3070", "RTX 4070", "RX 7700", "RX 7800",
+        "RTX 3080", "RTX 4080", "RTX 4090",
+        "RTX 5060", "RTX 5070", "RTX 5080", "RTX 5090", "Integrated",
+    ]
+    if rec_gpu in valid_gpus:
+        st.session_state[f"{prefix}_lf_gpu"] = rec_gpu
+        st.session_state[f"{prefix}_lf_mode_gpu"] = "Must" if rec_gpu != 'Integrated' else "Off"
+
+    rec_res = rec_specs.get('resolution', 'FHD')
+    res_map = {"HD": "HD (1366x768)", "FHD": "FHD (1920x1080)", "QHD": "QHD (2560x1440)", "4K UHD": "4K UHD (3840x2160)"}
+    if rec_res in res_map:
+        st.session_state[f"{prefix}_lf_res"] = res_map[rec_res]
+    st.session_state[f"{prefix}_lf_mode_res"] = "Optional"
+
+    st.session_state[f"{prefix}_lf_mode_screen"] = "Off"
+    st.session_state[f"{prefix}_lf_mode_brand"] = "Off"
+    st.session_state[f"{prefix}_lf_mode_price"] = "Off"
+
+
+# ══════════════════════════════════════════════════════════════════
+# Reusable Laptop/Desktop filter panel
+# ══════════════════════════════════════════════════════════════════
+
+def render_laptop_filters(key_prefix):
+    """Render laptop/desktop filter panel with Must/Optional toggles.
+
+    Returns dict of filter_name -> (value, mode) tuples.
+    """
+    st.markdown("### 💻 Laptop / Desktop Filters")
+    st.caption("Set each filter's value, then choose **Must** (hard requirement) or **Optional** (prefer but don't exclude)")
+
+    # Performance guide
+    with st.expander("📖 Performance Guide — What do these specs mean?"):
+        st.markdown("""
+**CPU Generations** (higher = newer & faster):
+| Gen | Intel | AMD | Era | Performance |
+|-----|-------|-----|-----|------------|
+| 10-11 | i7-10750H | Ryzen 5 4600H | 2020-21 | Budget / older |
+| 12 | i7-12700H | Ryzen 7 6800H | 2022 | Mid-range |
+| 13 | i7-13700H | Ryzen 7 7840HS | 2023 | Strong |
+| 14+ | i7-14700HX, Ultra | Ryzen 9 8945HS | 2024+ | Latest |
+
+**GPU Tiers** (for laptops — typical price premium over integrated):
+| Tier | NVIDIA | AMD | Good for | Price impact |
+|------|--------|-----|----------|-------------|
+| None | Integrated | Radeon (built-in) | Office, web, light use | Cheapest |
+| Entry | RTX 3050, 4050 | RX 7600 | Light gaming, photo editing | +$100-200 |
+| Mid | RTX 3060, 4060 | RX 7700 | Gaming at FHD, video editing | +$200-400 |
+| High | RTX 3070, 4070 | RX 7800 | Gaming at QHD, 3D work | +$400-700 |
+| Ultra | RTX 4080, 4090 | — | 4K gaming, AI/ML, pro 3D | +$700-1500 |
+
+**RAM** — how much do you need?
+| Amount | Good for |
+|--------|----------|
+| 8GB | Light browsing, office (bare minimum in 2024) |
+| 16GB | Multitasking, programming, moderate gaming |
+| 32GB | Heavy multitasking, video editing, serious gaming |
+| 64GB+ | AI/ML, professional video, virtual machines |
+
+**Storage:**
+| Size | Good for |
+|------|----------|
+| 256GB | OS + a few apps (tight) |
+| 512GB | Most users, moderate game library |
+| 1TB | Large game library, video editing |
+| 2TB+ | Professional media, huge libraries |
+        """)
+
+    laptop_filters = {}
+
+    def _filter_row(key, widget_fn):
+        c_val, c_mode = st.columns([3, 1])
+        with c_val:
+            value = widget_fn()
+        with c_mode:
+            mode = st.selectbox("", options=["Must", "Optional", "Off"],
+                                key=f"{key_prefix}_lf_mode_{key}", label_visibility="collapsed")
+        return value, mode
+
+    col_left, col_right = st.columns(2)
+
+    # Set sensible defaults in session state if not already set
+    _default = lambda k, v: st.session_state.setdefault(f"{key_prefix}_lf_{k}", v)
+    _default("ram", "16")
+    _default("storage", "512")
+    _default("cpu", "Any")
+    _default("screen", "Any")
+    _default("gpu", "Any")
+    _default("res", "Any")
+    _default("brand", "Any")
+    _default("mode_ram", "Must")
+    _default("mode_storage", "Optional")
+    _default("mode_cpu", "Off")
+    _default("mode_screen", "Off")
+    _default("mode_gpu", "Off")
+    _default("mode_res", "Off")
+    _default("mode_brand", "Off")
+    _default("mode_price", "Off")
+
+    with col_left:
+        f_ram, f_ram_mode = _filter_row("ram",
+            lambda: st.selectbox("Min RAM (GB)",
+                options=["Any", "8", "12", "16", "24", "32", "48", "64", "96", "128"],
+                key=f"{key_prefix}_lf_ram",
+                help="8=basic, 16=standard, 32=power user, 64+=professional"))
+        laptop_filters['min_ram'] = (0 if f_ram == "Any" else int(f_ram), f_ram_mode)
+
+        f_storage, f_storage_mode = _filter_row("storage",
+            lambda: st.selectbox("Min Storage",
+                options=["Any", "128", "256", "512", "1024", "2048", "4096"],
+                key=f"{key_prefix}_lf_storage",
+                format_func=lambda x: x if x == "Any" else f"{x}GB" if int(x) < 1024 else f"{int(x)//1024}TB",
+                help="256=tight, 512=most users, 1TB=gamers/editors"))
+        laptop_filters['min_storage'] = (0 if f_storage == "Any" else int(f_storage), f_storage_mode)
+
+        f_cpu, f_cpu_mode = _filter_row("cpu",
+            lambda: st.selectbox("Min CPU Generation",
+                options=["Any", "8", "9", "10", "11", "12", "13", "14"],
+                key=f"{key_prefix}_lf_cpu",
+                help="8-9=aging, 10-11=budget, 12=mid, 13-14=current"))
+        laptop_filters['min_cpu_gen'] = (0 if f_cpu == "Any" else int(f_cpu), f_cpu_mode)
+
+        f_screen, f_screen_mode = _filter_row("screen",
+            lambda: st.selectbox("Min Screen Size",
+                options=["Any", "11.6\"", "13\"", "13.3\"", "14\"", "15.6\"", "16\"", "17.3\""],
+                key=f"{key_prefix}_lf_screen",
+                help="13\"=ultraportable, 15.6\"=standard, 17\"=desktop replacement"))
+        laptop_filters['min_screen'] = (0 if f_screen == "Any" else float(f_screen.replace('"', '')), f_screen_mode)
+
+    with col_right:
+        f_gpu, f_gpu_mode = _filter_row("gpu",
+            lambda: st.selectbox("GPU",
+                options=[
+                    "Any",
+                    "--- Entry ---", "RTX 3050", "RTX 4050",
+                    "--- Mid ---", "RTX 3060", "RTX 4060", "RX 7600",
+                    "--- High ---", "RTX 3070", "RTX 4070", "RX 7700", "RX 7800",
+                    "--- Ultra ---", "RTX 3080", "RTX 4080", "RTX 4090",
+                    "--- New Gen ---", "RTX 5060", "RTX 5070", "RTX 5080", "RTX 5090",
+                    "Integrated",
+                ],
+                key=f"{key_prefix}_lf_gpu",
+                help="Entry=light gaming, Mid=solid gaming, High=enthusiast, Ultra=pro"))
+        gpu_val = f_gpu if not f_gpu.startswith("---") else "Any"
+        laptop_filters['gpu'] = (gpu_val, f_gpu_mode)
+
+        f_res, f_res_mode = _filter_row("res",
+            lambda: st.selectbox("Min Resolution",
+                options=["Any", "HD (1366x768)", "FHD (1920x1080)", "FHD+", "QHD (2560x1440)", "QHD+", "4K UHD (3840x2160)"],
+                key=f"{key_prefix}_lf_res",
+                help="FHD=most common, QHD=sharp, 4K=very sharp but uses more battery"))
+        res_map = {"HD (1366x768)": "HD", "FHD (1920x1080)": "FHD", "QHD (2560x1440)": "QHD", "4K UHD (3840x2160)": "4K UHD"}
+        res_val = res_map.get(f_res, f_res)
+        laptop_filters['min_resolution'] = (res_val, f_res_mode)
+
+        brand_options = ["Any", "Acer", "Apple", "ASUS", "Dell", "Gigabyte", "HP",
+                         "Lenovo", "LG", "Microsoft", "MSI", "Razer", "Samsung", "Toshiba"]
+        f_brand, f_brand_mode = _filter_row("brand",
+            lambda: st.selectbox("Brand", options=brand_options, key=f"{key_prefix}_lf_brand"))
+        laptop_filters['brand'] = (f_brand, f_brand_mode)
+
+        f_price, f_price_mode = _filter_row("price",
+            lambda: st.number_input("Max Price", min_value=0.0, max_value=10000.0, value=0.0,
+                                    step=100.0, key=f"{key_prefix}_lf_price", help="0 = no limit"))
+        laptop_filters['max_price'] = (f_price, f_price_mode)
+
+    return laptop_filters
+
+
+def build_laptop_query_from_filters(base_query, laptop_filters, category='laptop'):
+    """Auto-build a search query string from laptop filter values."""
+    query_parts = []
+    # Always include the category so results are relevant
+    base = base_query.strip()
+    if base.lower() not in ('laptop', 'desktop', 'notebook', ''):
+        query_parts.append(base)
+    # Ensure "laptop" or "desktop" is in the query
+    if category and category != 'auto-detect':
+        if category.lower() not in ' '.join(query_parts).lower():
+            query_parts.insert(0, category)
+
+    ram_val, ram_mode = laptop_filters.get('min_ram', (0, 'Off'))
+    if ram_val >= 32 and ram_mode != 'Off':
+        # Avoid duplicating if already in the base query
+        if f"{ram_val}GB" not in ' '.join(query_parts).upper() and f"{ram_val} GB" not in ' '.join(query_parts).upper():
+            query_parts.append(f"{ram_val}GB RAM")
+
+    storage_val, storage_mode = laptop_filters.get('min_storage', (0, 'Off'))
+    if storage_val >= 1024 and storage_mode != 'Off':
+        query_parts.append(f"{storage_val // 1024}TB SSD")
+    elif storage_val >= 512 and storage_mode != 'Off':
+        query_parts.append("512GB+ SSD")
+
+    gpu_val, gpu_mode = laptop_filters.get('gpu', ('Any', 'Off'))
+    if gpu_val != 'Any' and gpu_val != 'Integrated' and gpu_mode != 'Off':
+        query_parts.append(gpu_val)
+
+    screen_val, screen_mode = laptop_filters.get('min_screen', (0, 'Off'))
+    if screen_val >= 17 and screen_mode != 'Off':
+        query_parts.append('17"')
+
+    res_val, res_mode = laptop_filters.get('min_resolution', ('Any', 'Off'))
+    if res_val not in ('Any', 'HD', 'FHD') and res_mode != 'Off':
+        query_parts.append(res_val)
+
+    brand_val, brand_mode = laptop_filters.get('brand', ('Any', 'Off'))
+    if brand_val != 'Any' and brand_mode != 'Off':
+        query_parts.append(brand_val)
+
+    if not query_parts:
+        query_parts.append("laptop")
+
+    return " ".join(query_parts)
+
+
+def _apply_laptop_filters(products, laptop_filters):
+    """Apply Must/Optional laptop filters. Returns (filtered, scores, skipped)."""
+    from spec_parser import RESOLUTION_RANK
+    filtered = []
+    scores = {}
+    skipped = 0
+
+    for p in products:
+        specs = p.get('specs', {})
+        price = p.get('price', 0)
+        passed = True
+
+        # Must filters
+        ram_val, ram_mode = laptop_filters.get('min_ram', (0, 'Off'))
+        if ram_mode == 'Must' and ram_val > 0:
+            detected = specs.get('ram', 0)
+            if detected == 0 or detected < ram_val:
+                passed = False
+
+        storage_val, storage_mode = laptop_filters.get('min_storage', (0, 'Off'))
+        if storage_mode == 'Must' and storage_val > 0:
+            detected = specs.get('storage', 0)
+            if detected > 0 and detected < storage_val:
+                passed = False
+
+        cpu_val, cpu_mode = laptop_filters.get('min_cpu_gen', (0, 'Off'))
+        if cpu_mode == 'Must' and cpu_val > 0:
+            detected = specs.get('cpu_gen', 0)
+            if detected > 0 and detected < cpu_val:
+                passed = False
+
+        screen_val, screen_mode = laptop_filters.get('min_screen', (0, 'Off'))
+        if screen_mode == 'Must' and screen_val > 0:
+            detected = specs.get('screen_size', 0)
+            if detected > 0 and detected < screen_val:
+                passed = False
+
+        gpu_val, gpu_mode = laptop_filters.get('gpu', ('Any', 'Off'))
+        if gpu_mode == 'Must' and gpu_val != 'Any':
+            detected = specs.get('gpu', 'Integrated')
+            if gpu_val == 'Integrated':
+                pass  # Everything has at least integrated
+            elif gpu_val.upper() not in detected.upper():
+                passed = False
+
+        res_val, res_mode = laptop_filters.get('min_resolution', ('Any', 'Off'))
+        if res_mode == 'Must' and res_val != 'Any':
+            detected = specs.get('resolution', 'Unknown')
+            target_rank = RESOLUTION_RANK.get(res_val, 0)
+            detected_rank = RESOLUTION_RANK.get(detected, 0)
+            if detected_rank > 0 and detected_rank < target_rank:
+                passed = False
+
+        brand_val, brand_mode = laptop_filters.get('brand', ('Any', 'Off'))
+        if brand_mode == 'Must' and brand_val != 'Any':
+            if brand_val.lower() not in p.get('name', '').lower():
+                passed = False
+
+        price_val, price_mode = laptop_filters.get('max_price', (0, 'Off'))
+        if price_mode == 'Must' and price_val > 0:
+            if price > price_val:
+                passed = False
+
+        if not passed:
+            skipped += 1
+            continue
+
+        # Optional scoring
+        opt_score = 0
+
+        if ram_mode == 'Optional' and ram_val > 0:
+            if specs.get('ram', 0) >= ram_val:
+                opt_score += 2
+
+        if storage_mode == 'Optional' and storage_val > 0:
+            if specs.get('storage', 0) >= storage_val:
+                opt_score += 1
+
+        if cpu_mode == 'Optional' and cpu_val > 0:
+            if specs.get('cpu_gen', 0) >= cpu_val:
+                opt_score += 2
+
+        if screen_mode == 'Optional' and screen_val > 0:
+            if specs.get('screen_size', 0) >= screen_val:
+                opt_score += 1
+
+        if gpu_mode == 'Optional' and gpu_val not in ('Any', 'Integrated'):
+            if gpu_val.upper() in specs.get('gpu', '').upper():
+                opt_score += 2
+
+        if res_mode == 'Optional' and res_val != 'Any':
+            target_rank = RESOLUTION_RANK.get(res_val, 0)
+            detected_rank = RESOLUTION_RANK.get(specs.get('resolution', 'Unknown'), 0)
+            if detected_rank >= target_rank:
+                opt_score += 1
+
+        if brand_mode == 'Optional' and brand_val != 'Any':
+            if brand_val.lower() in p.get('name', '').lower():
+                opt_score += 1
+
+        if price_mode == 'Optional' and price_val > 0:
+            if price <= price_val:
+                opt_score += 2
+
+        filtered.append(p)
+        scores[id(p)] = opt_score
+
+    return filtered, scores, skipped
+
+
+# ══════════════════════════════════════════════════════════════════
 # Product deduplication
 # ══════════════════════════════════════════════════════════════════
 
@@ -776,8 +1340,13 @@ for key in ['deals', 'current_specs', 'analyzed', 'search_deals']:
     if key not in st.session_state:
         st.session_state[key] = None if key != 'analyzed' else False
 
+# Apply any pending filter auto-fills (from My System tab) before widgets render
+_apply_pending_filters("ca")
+_apply_pending_filters("us")
+
 # ── Tabs ──
-tab_search_ca, tab_search_us, tab_upload, tab_tracked, tab_alerts, tab_settings = st.tabs([
+tab_mysystem, tab_search_ca, tab_search_us, tab_upload, tab_tracked, tab_alerts, tab_settings = st.tabs([
+    "💻 My System",
     "🇨🇦 Search Canada",
     "🇺🇸 Search USA",
     "📁 Upload HTML",
@@ -792,6 +1361,10 @@ tab_search_ca, tab_search_us, tab_upload, tab_tracked, tab_alerts, tab_settings 
 # ═══════════════════════════════════════════
 with tab_search_ca:
     st.subheader("Search Canadian Retailers")
+
+    # Show detected specs summary if available
+    if st.session_state.get('detected_specs'):
+        _render_my_system_bar(st.session_state['detected_specs'], "ca")
 
     col_query, col_cat = st.columns([3, 1])
     with col_query:
@@ -816,18 +1389,7 @@ with tab_search_ca:
     if is_ram_search:
         ram_filters = render_ram_filters("ca")
     else:
-        # General filters for laptops/desktops/other
-        col_current, col_minimum = st.columns(2)
-        with col_current:
-            st.markdown("**Your Current Specs** (for upgrade comparison)")
-            current_ram_search = st.number_input("Your RAM (GB)", min_value=4, max_value=128, value=16, key="s_ram")
-            current_storage_search = st.number_input("Your Storage (GB)", min_value=128, max_value=8000, value=512, key="s_storage")
-            current_cpu_search = st.number_input("Your CPU Gen", min_value=1, max_value=20, value=10, key="s_cpu")
-        with col_minimum:
-            st.markdown("**Minimum Requirements** (filter results)")
-            min_ram = st.number_input("Min RAM (GB)", min_value=0, max_value=128, value=16, key="s_min_ram")
-            min_storage = st.number_input("Min Storage (GB)", min_value=0, max_value=8000, value=256, key="s_min_storage")
-            min_cpu = st.number_input("Min CPU Gen", min_value=0, max_value=20, value=0, key="s_min_cpu")
+        laptop_filters = render_laptop_filters("ca")
 
     col_opts1, col_opts2, col_opts3 = st.columns(3)
     with col_opts1:
@@ -849,23 +1411,14 @@ with tab_search_ca:
                 st.session_state['ram_filters'] = ram_filters
                 search_query = build_ram_query_from_filters(search_query, ram_filters)
             else:
-                current_specs_search = {
-                    'cpu_gen': current_cpu_search,
-                    'ram': current_ram_search,
-                    'storage': current_storage_search,
-                }
-                min_specs = {
-                    'cpu_gen': min_cpu,
-                    'ram': min_ram,
-                    'storage': min_storage,
-                }
+                current_specs_search = {'cpu_gen': 0, 'ram': 0, 'storage': 0}
+                min_specs = {'ram': 0, 'storage': 0, 'cpu_gen': 0}
+                st.session_state['laptop_filters'] = laptop_filters
+                search_query = build_laptop_query_from_filters(search_query, laptop_filters, category=search_category)
 
             from scrapers.serpapi_shopping import search_products as serpapi_search, build_search_query
             from scrapers.bestbuy_ca import search_products as bestbuy_search
-            if is_ram_search:
-                enhanced_query = search_query  # Already built from filters above
-            else:
-                enhanced_query = build_search_query(search_query, min_specs if not search_show_all else None)
+            enhanced_query = search_query
             st.info(f"Searching: **{enhanced_query}**")
 
             cat = None if search_category == 'auto-detect' else search_category
@@ -962,11 +1515,39 @@ with tab_search_ca:
                     st.session_state['search_deals'] = search_deals
                     st.session_state['search_skipped'] = skipped
                 else:
-                    search_deals, skipped = analyze_search_deals(
-                        products, current_specs_search,
-                        min_specs if not search_show_all else None,
-                        search_show_all
-                    )
+                    # Apply laptop/desktop Must/Optional filtering
+                    if not search_show_all:
+                        filtered, optional_scores, skipped = _apply_laptop_filters(products, laptop_filters)
+                        filtered.sort(key=lambda x: (-optional_scores.get(id(x), 0), x.get('price', 0)))
+                    else:
+                        filtered = products
+                        optional_scores = {id(p): 0 for p in products}
+                        skipped = 0
+
+                    search_deals = []
+                    for p in filtered:
+                        specs = p.get('specs', {})
+                        saving = p.get('saving', 0)
+                        deal = {
+                            'name': p.get('name', ''), 'price': p.get('price', 0),
+                            'original_price': p.get('original_price'),
+                            'saving': saving, 'specs': specs,
+                            'condition': extract_condition(p.get('name', '')),
+                            'notes': [], 'score': optional_scores.get(id(p), 0),
+                            'url': p.get('url', ''), 'sku': p.get('retailer_sku', ''),
+                            'source': p.get('source_display', ''),
+                            'retailer': p.get('retailer', 'unknown'),
+                            'category': p.get('category', 'laptop'), 'is_upgrade': False,
+                            'thumbnail': p.get('thumbnail', ''),
+                            'country': p.get('country', 'ca'),
+                            'cross_border': p.get('cross_border'),
+                            'ships_to_canada': p.get('ships_to_canada'),
+                            'trust': p.get('trust', 'unknown'),
+                        }
+                        if saving > 0:
+                            dpct = (saving / (p['price'] + saving)) * 100 if (p['price'] + saving) > 0 else 0
+                            deal['notes'].append(f"{dpct:.0f}% off")
+                        search_deals.append(deal)
                     st.session_state['search_deals'] = search_deals
                     st.session_state['search_skipped'] = skipped
                 st.session_state['search_current'] = current_specs_search
@@ -1099,6 +1680,11 @@ with tab_search_ca:
                     if deal.get('notes'):
                         st.markdown(f"**{', '.join(deal['notes'])}**")
 
+                    # Show system comparison if specs detected
+                    if st.session_state.get('detected_specs') and cat in ('laptop', 'desktop'):
+                        st.markdown("---")
+                        _render_deal_comparison(deal, st.session_state['detected_specs'])
+
                     col_link, col_save = st.columns([1, 1])
                     with col_link:
                         if deal.get('url'):
@@ -1116,6 +1702,9 @@ with tab_search_us:
     st.subheader("🇺🇸 Search US Retailers")
     st.caption("For US-based shopping. Prices in USD.")
 
+    if st.session_state.get('detected_specs'):
+        _render_my_system_bar(st.session_state['detected_specs'], "us")
+
     us_query = st.text_input("Search for tech deals", value="DDR4 32GB", key="us_query",
                              placeholder="e.g., DDR5 RAM 32GB, RTX 4070, gaming laptop")
     us_category = st.selectbox("Category", options=['auto-detect'] + SUPPORTED_CATEGORIES,
@@ -1127,17 +1716,7 @@ with tab_search_us:
     if us_is_ram:
         us_ram_filters = render_ram_filters("us")
     else:
-        col_us_cur, col_us_min = st.columns(2)
-        with col_us_cur:
-            st.markdown("**Your Current Specs** (for upgrade comparison)")
-            us_cur_ram = st.number_input("Your RAM (GB)", min_value=4, max_value=128, value=16, key="us_cur_ram")
-            us_cur_storage = st.number_input("Your Storage (GB)", min_value=128, max_value=8000, value=512, key="us_cur_storage")
-            us_cur_cpu = st.number_input("Your CPU Gen", min_value=1, max_value=20, value=10, key="us_cur_cpu")
-        with col_us_min:
-            st.markdown("**Minimum Requirements** (filter results)")
-            us_min_ram = st.number_input("Min RAM (GB)", min_value=0, max_value=128, value=16, key="us_min_ram")
-            us_min_storage = st.number_input("Min Storage (GB)", min_value=0, max_value=8000, value=256, key="us_min_storage")
-            us_min_cpu = st.number_input("Min CPU Gen", min_value=0, max_value=20, value=0, key="us_min_cpu")
+        us_laptop_filters = render_laptop_filters("us")
 
     us_col1, us_col2 = st.columns(2)
     with us_col1:
@@ -1156,9 +1735,7 @@ with tab_search_us:
             if us_is_ram:
                 us_search_q = build_ram_query_from_filters(us_query, us_ram_filters)
             else:
-                from scrapers.serpapi_shopping import build_search_query
-                us_min_specs = {'cpu_gen': us_min_cpu, 'ram': us_min_ram, 'storage': us_min_storage}
-                us_search_q = build_search_query(us_query, us_min_specs if not us_show_all else None)
+                us_search_q = build_laptop_query_from_filters(us_query, us_laptop_filters, category=us_category)
 
             st.info(f"Searching: **{us_search_q}**")
             us_cat = None if us_category == 'auto-detect' else us_category
@@ -1206,16 +1783,37 @@ with tab_search_us:
                     st.session_state['us_deals'] = us_deals
                     st.session_state['us_skipped'] = skipped
                 else:
-                    us_cur_specs = {'cpu_gen': 0, 'ram': 0, 'storage': 0}
-                    if not us_is_ram:
-                        us_cur_specs = {'cpu_gen': us_cur_cpu, 'ram': us_cur_ram, 'storage': us_cur_storage}
-                    us_deals, us_skipped = analyze_search_deals(
-                        us_products, us_cur_specs,
-                        us_min_specs if not us_is_ram and not us_show_all else None,
-                        us_show_all
-                    )
+                    # Apply laptop/desktop filters
+                    if not us_show_all:
+                        filtered, opt_scores, skipped = _apply_laptop_filters(us_products, us_laptop_filters)
+                        filtered.sort(key=lambda x: (-opt_scores.get(id(x), 0), x.get('price', 0)))
+                    else:
+                        filtered = us_products
+                        opt_scores = {id(p): 0 for p in us_products}
+                        skipped = 0
+
+                    us_deals = []
+                    for p in filtered:
+                        specs = p.get('specs', {})
+                        saving = p.get('saving', 0)
+                        deal = {
+                            'name': p.get('name', ''), 'price': p.get('price', 0),
+                            'original_price': p.get('original_price'),
+                            'saving': saving, 'specs': specs,
+                            'condition': extract_condition(p.get('name', '')),
+                            'notes': [], 'score': opt_scores.get(id(p), 0),
+                            'url': p.get('url', ''), 'sku': p.get('retailer_sku', ''),
+                            'source': p.get('source_display', ''),
+                            'retailer': p.get('retailer', 'unknown'),
+                            'category': p.get('category', 'laptop'), 'is_upgrade': False,
+                            'thumbnail': p.get('thumbnail', ''),
+                        }
+                        if saving > 0:
+                            dpct = (saving / (p['price'] + saving)) * 100 if (p['price'] + saving) > 0 else 0
+                            deal['notes'].append(f"{dpct:.0f}% off")
+                        us_deals.append(deal)
                     st.session_state['us_deals'] = us_deals
-                    st.session_state['us_skipped'] = us_skipped
+                    st.session_state['us_skipped'] = skipped
 
     # Display US results
     if st.session_state.get('us_deals'):
@@ -1305,7 +1903,114 @@ with tab_search_us:
 
 
 # ═══════════════════════════════════════════
-# TAB 3: Upload HTML (Best Buy Canada)
+# TAB 3: My System
+# ═══════════════════════════════════════════
+with tab_mysystem:
+    st.subheader("💻 My System")
+    st.markdown("Detect your current specs and get personalized upgrade recommendations.")
+
+    # Detect specs
+    if st.button("🔍 Detect My Specs", type="primary", key="detect_specs"):
+        with st.spinner("Reading system info..."):
+            try:
+                from system_detect import detect_specs, format_specs_summary
+                detected = detect_specs()
+                st.session_state['detected_specs'] = detected
+            except Exception as e:
+                st.error(f"Detection failed: {e}")
+
+    if st.session_state.get('detected_specs'):
+        from system_detect import format_specs_summary, USAGE_PROFILES, get_upgrade_recommendations
+        detected = st.session_state['detected_specs']
+
+        st.markdown("### Your Current System")
+        st.markdown(format_specs_summary(detected))
+
+        # Upgrade advisor
+        st.markdown("---")
+        st.markdown("### 🎯 What Should I Upgrade?")
+        st.markdown("Select how you use (or want to use) your computer:")
+
+        usage = st.selectbox(
+            "Primary usage",
+            options=list(USAGE_PROFILES.keys()),
+            format_func=lambda k: f"{USAGE_PROFILES[k]['name']} — {USAGE_PROFILES[k]['description']}",
+            key="usage_profile"
+        )
+
+        if usage:
+            recs = get_upgrade_recommendations(detected, usage)
+
+            for rec in recs:
+                if rec['urgency'] == 'none':
+                    st.success(rec['reason'])
+                    continue
+
+                urgency_icon = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(rec['urgency'], '⚪')
+                urgency_label = {'high': 'High Priority', 'medium': 'Nice to Have', 'low': 'Optional'}.get(rec['urgency'], '')
+
+                with st.expander(f"{urgency_icon} **{rec['component']}** — {urgency_label}", expanded=rec['urgency'] == 'high'):
+                    if rec['current']:
+                        st.markdown(f"**You have:** {rec['current']}")
+                    if rec['recommended']:
+                        st.markdown(f"**Recommended:** {rec['recommended']}")
+                    st.markdown(rec['reason'])
+                    if rec.get('search_hint'):
+                        st.markdown(f"**Search tip:** Try searching `{rec['search_hint']}` in the Search tabs")
+
+        # Auto-fill search filters
+        st.markdown("---")
+        st.markdown("### 🚀 Auto-Fill Search Filters")
+        st.markdown("Click below to set the search filters based on the recommended upgrades for your usage profile.")
+
+        if usage:
+            profile = USAGE_PROFILES.get(usage, {})
+            rec_specs = profile.get('recommended', {})
+
+            col_fill_ca, col_fill_us = st.columns(2)
+            with col_fill_ca:
+                if st.button("🇨🇦 Fill Canada Search Filters", type="primary", key="fill_ca"):
+                    _set_recommended_filters("ca", rec_specs, detected)
+                    st.rerun()
+            with col_fill_us:
+                if st.button("🇺🇸 Fill USA Search Filters", key="fill_us"):
+                    _set_recommended_filters("us", rec_specs, detected)
+                    st.rerun()
+
+            st.caption(f"Will set: {rec_specs.get('ram', '?')}GB RAM, Gen {rec_specs.get('cpu_gen', '?')}+ CPU, "
+                      f"{rec_specs.get('gpu', 'Any')} GPU, {rec_specs.get('storage', '?')}GB+ storage")
+
+    else:
+        st.info("Click **Detect My Specs** to read your current system hardware. This runs locally — no data is sent anywhere.")
+
+        # Manual entry fallback
+        with st.expander("Or enter specs manually"):
+            st.markdown("If auto-detection doesn't work, enter your specs here:")
+            m_cpu = st.text_input("CPU", placeholder="e.g., Intel Core i7-10750H", key="manual_cpu")
+            m_ram = st.number_input("RAM (GB)", min_value=0, max_value=256, value=0, key="manual_ram")
+            m_storage = st.number_input("Total Storage (GB)", min_value=0, max_value=16000, value=0, key="manual_storage")
+            m_gpu = st.text_input("GPU", placeholder="e.g., RTX 3060 or Intel UHD", key="manual_gpu")
+
+            if st.button("Save Manual Specs", key="save_manual"):
+                from system_detect import _parse_cpu_gen
+                manual_specs = {
+                    'cpu_name': m_cpu,
+                    'cpu_gen': _parse_cpu_gen(m_cpu) if m_cpu else 0,
+                    'ram_gb': m_ram,
+                    'ram_type': '',
+                    'ram_speed_mhz': 0,
+                    'ram_sticks': 0,
+                    'storage': [{'size_gb': m_storage, 'type': 'Unknown', 'model': 'Manual entry'}] if m_storage > 0 else [],
+                    'gpu': m_gpu,
+                    'os': '',
+                    'screen_resolution': '',
+                }
+                st.session_state['detected_specs'] = manual_specs
+                st.rerun()
+
+
+# ═══════════════════════════════════════════
+# TAB 4: Upload HTML (Best Buy Canada)
 # ═══════════════════════════════════════════
 with tab_upload:
     col1, col2 = st.columns([2, 1])
