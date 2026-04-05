@@ -43,6 +43,9 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ]
 )
+# Suppress debug logging from HTTP libraries (leaks API keys in URLs)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('requests').setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 

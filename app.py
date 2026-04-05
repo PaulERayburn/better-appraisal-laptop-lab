@@ -705,6 +705,19 @@ def _format_storage(gb):
     return f"{gb}GB" if gb < 1024 else f"{gb / 1024:.1f}TB"
 
 
+def _comparable_cad_price(product):
+    """Return estimated CAD delivered price for sorting.
+
+    For Canadian products: raw price (already in CAD).
+    For US products: mid-point of estimated CAD total (price + shipping converted).
+    """
+    cb = product.get('cross_border')
+    if cb and product.get('country') == 'us':
+        # Use midpoint of shipping estimate for fair comparison
+        return (cb.get('cad_total_low', 0) + cb.get('cad_total_high', 0)) / 2
+    return product.get('price', 0)
+
+
 def _set_recommended_filters(prefix, rec_specs, detected):
     """Stage recommended specs for filter auto-fill.
 
@@ -843,6 +856,15 @@ def render_laptop_filters(key_prefix):
 | 512GB | Most users, moderate game library |
 | 1TB | Large game library, video editing |
 | 2TB+ | Professional media, huge libraries |
+
+**Operating System:**
+| OS | Notes |
+|----|-------|
+| Windows 11 Home | Standard for consumers. Most common. |
+| Windows 11 Pro | Adds BitLocker, Remote Desktop, group policy. Best for business/power users. |
+| Chrome OS | Chromebooks only. Web-based, limited app support. |
+| macOS | Apple laptops only. |
+| No OS / FreeDOS | Cheapest — you install your own OS. Good if you have a Windows license. |
         """)
 
     laptop_filters = {}
@@ -875,6 +897,10 @@ def render_laptop_filters(key_prefix):
     _default("mode_res", "Off")
     _default("mode_brand", "Off")
     _default("mode_price", "Off")
+    _default("os", "Any")
+    _default("mode_os", "Off")
+    _default("condition", "New Only")
+    _default("mode_condition", "Must")
 
     with col_left:
         f_ram, f_ram_mode = _filter_row("ram",
@@ -938,6 +964,20 @@ def render_laptop_filters(key_prefix):
             lambda: st.selectbox("Brand", options=brand_options, key=f"{key_prefix}_lf_brand"))
         laptop_filters['brand'] = (f_brand, f_brand_mode)
 
+        f_os, f_os_mode = _filter_row("os",
+            lambda: st.selectbox("Operating System",
+                options=["Any", "Windows 11 Pro", "Windows 11 Home", "Windows 11", "Chrome OS", "macOS", "No OS / FreeDOS"],
+                key=f"{key_prefix}_lf_os",
+                help="Pro adds BitLocker, Remote Desktop. Home is standard."))
+        laptop_filters['os'] = (f_os, f_os_mode)
+
+        f_cond, f_cond_mode = _filter_row("condition",
+            lambda: st.selectbox("Condition",
+                options=["Any", "New Only", "Include Refurbished", "Include Open Box", "Refurbished Only", "Open Box Only"],
+                key=f"{key_prefix}_lf_condition",
+                help="New Only excludes refurbished and open box products"))
+        laptop_filters['condition'] = (f_cond, f_cond_mode)
+
         f_price, f_price_mode = _filter_row("price",
             lambda: st.number_input("Max Price", min_value=0.0, max_value=10000.0, value=0.0,
                                     step=100.0, key=f"{key_prefix}_lf_price", help="0 = no limit"))
@@ -947,44 +987,35 @@ def render_laptop_filters(key_prefix):
 
 
 def build_laptop_query_from_filters(base_query, laptop_filters, category='laptop'):
-    """Auto-build a search query string from laptop filter values."""
+    """Auto-build a search query string from laptop filter values.
+
+    Keeps the query broad (category + GPU + brand at most) so Google Shopping
+    returns plenty of results. Local Must/Optional filters handle the rest.
+    """
     query_parts = []
-    # Always include the category so results are relevant
     base = base_query.strip()
     if base.lower() not in ('laptop', 'desktop', 'notebook', ''):
         query_parts.append(base)
-    # Ensure "laptop" or "desktop" is in the query
+    # Always include category
     if category and category != 'auto-detect':
         if category.lower() not in ' '.join(query_parts).lower():
             query_parts.insert(0, category)
 
-    ram_val, ram_mode = laptop_filters.get('min_ram', (0, 'Off'))
-    if ram_val >= 32 and ram_mode != 'Off':
-        # Avoid duplicating if already in the base query
-        if f"{ram_val}GB" not in ' '.join(query_parts).upper() and f"{ram_val} GB" not in ' '.join(query_parts).upper():
-            query_parts.append(f"{ram_val}GB RAM")
-
-    storage_val, storage_mode = laptop_filters.get('min_storage', (0, 'Off'))
-    if storage_val >= 1024 and storage_mode != 'Off':
-        query_parts.append(f"{storage_val // 1024}TB SSD")
-    elif storage_val >= 512 and storage_mode != 'Off':
-        query_parts.append("512GB+ SSD")
-
+    # Only add the most impactful specs to the query — GPU and brand
+    # Other specs (RAM, storage, OS, resolution) are filtered locally
     gpu_val, gpu_mode = laptop_filters.get('gpu', ('Any', 'Off'))
     if gpu_val != 'Any' and gpu_val != 'Integrated' and gpu_mode != 'Off':
         query_parts.append(gpu_val)
 
-    screen_val, screen_mode = laptop_filters.get('min_screen', (0, 'Off'))
-    if screen_val >= 17 and screen_mode != 'Off':
-        query_parts.append('17"')
-
-    res_val, res_mode = laptop_filters.get('min_resolution', ('Any', 'Off'))
-    if res_val not in ('Any', 'HD', 'FHD') and res_mode != 'Off':
-        query_parts.append(res_val)
-
     brand_val, brand_mode = laptop_filters.get('brand', ('Any', 'Off'))
     if brand_val != 'Any' and brand_mode != 'Off':
         query_parts.append(brand_val)
+
+    # Add RAM to query when 32GB+ (meaningful differentiator — most laptops are 16GB)
+    ram_val, ram_mode = laptop_filters.get('min_ram', (0, 'Off'))
+    if ram_val >= 32 and ram_mode != 'Off':
+        if f"{ram_val}GB" not in ' '.join(query_parts).upper():
+            query_parts.append(f"{ram_val}GB")
 
     if not query_parts:
         query_parts.append("laptop")
@@ -1050,6 +1081,45 @@ def _apply_laptop_filters(products, laptop_filters):
             if brand_val.lower() not in p.get('name', '').lower():
                 passed = False
 
+        cond_val, cond_mode = laptop_filters.get('condition', ('Any', 'Off'))
+        if cond_mode == 'Must' and cond_val != 'Any':
+            from spec_parser import extract_condition as _ec
+            product_cond = _ec(p.get('name', '')).lower()
+            if cond_val == 'New Only':
+                if 'refurbished' in product_cond or 'open box' in product_cond:
+                    passed = False
+            elif cond_val == 'Refurbished Only':
+                if 'refurbished' not in product_cond:
+                    passed = False
+            elif cond_val == 'Open Box Only':
+                if 'open box' not in product_cond:
+                    passed = False
+            # "Include Refurbished" and "Include Open Box" don't exclude anything
+
+        os_val, os_mode = laptop_filters.get('os', ('Any', 'Off'))
+        if os_mode == 'Must' and os_val != 'Any':
+            name_lower = p.get('name', '').lower()
+            os_lower = os_val.lower()
+            # "Windows 11" matches both Home and Pro; specific versions must match exactly
+            if os_lower == 'windows 11':
+                if 'windows 11' not in name_lower and 'win 11' not in name_lower:
+                    passed = False
+            elif 'pro' in os_lower:
+                if 'pro' not in name_lower and 'windows 11 pro' not in name_lower:
+                    passed = False
+            elif 'home' in os_lower:
+                if 'home' not in name_lower:
+                    passed = False
+            elif 'chrome' in os_lower:
+                if 'chrome' not in name_lower and 'chromebook' not in name_lower:
+                    passed = False
+            elif 'macos' in os_lower:
+                if 'mac' not in name_lower and 'apple' not in name_lower:
+                    passed = False
+            elif 'no os' in os_lower or 'freedos' in os_lower:
+                if 'freedos' not in name_lower and 'no os' not in name_lower:
+                    passed = False
+
         price_val, price_mode = laptop_filters.get('max_price', (0, 'Off'))
         if price_mode == 'Must' and price_val > 0:
             if price > price_val:
@@ -1090,6 +1160,21 @@ def _apply_laptop_filters(products, laptop_filters):
 
         if brand_mode == 'Optional' and brand_val != 'Any':
             if brand_val.lower() in p.get('name', '').lower():
+                opt_score += 1
+
+        if os_mode == 'Optional' and os_val != 'Any':
+            name_lower = p.get('name', '').lower()
+            if os_val.lower() in name_lower:
+                opt_score += 1
+
+        if cond_mode == 'Optional' and cond_val != 'Any':
+            from spec_parser import extract_condition as _ec
+            product_cond = _ec(p.get('name', '')).lower()
+            if cond_val == 'New Only' and product_cond == 'new':
+                opt_score += 1
+            elif cond_val == 'Refurbished Only' and 'refurbished' in product_cond:
+                opt_score += 1
+            elif cond_val == 'Open Box Only' and 'open box' in product_cond:
                 opt_score += 1
 
         if price_mode == 'Optional' and price_val > 0:
@@ -1370,7 +1455,7 @@ with tab_search_ca:
     with col_query:
         search_query = st.text_input(
             "Search for tech deals",
-            value="gaming laptop",
+            value="laptop",
             placeholder="e.g., DDR5 RAM 32GB, RTX 4070, gaming laptop"
         )
     with col_cat:
@@ -1486,7 +1571,7 @@ with tab_search_ca:
                     # Apply RAM-specific must/optional filtering
                     filtered, optional_scores, skipped = _apply_ram_filters(products, ram_filters)
                     # Sort by optional score (desc), then price (asc)
-                    filtered.sort(key=lambda x: (-optional_scores.get(id(x), 0), x.get('price', 0)))
+                    filtered.sort(key=lambda x: (-optional_scores.get(id(x), 0), _comparable_cad_price(x)))
                     # Convert to deal format
                     search_deals = []
                     for p in filtered:
@@ -1507,6 +1592,7 @@ with tab_search_ca:
                             'cross_border': p.get('cross_border'),
                             'ships_to_canada': p.get('ships_to_canada'),
                             'trust': p.get('trust', 'unknown'),
+                            'est_cad': _comparable_cad_price(p),
                         }
                         if saving > 0:
                             dpct = (saving / (p['price'] + saving)) * 100 if (p['price'] + saving) > 0 else 0
@@ -1518,7 +1604,7 @@ with tab_search_ca:
                     # Apply laptop/desktop Must/Optional filtering
                     if not search_show_all:
                         filtered, optional_scores, skipped = _apply_laptop_filters(products, laptop_filters)
-                        filtered.sort(key=lambda x: (-optional_scores.get(id(x), 0), x.get('price', 0)))
+                        filtered.sort(key=lambda x: (-optional_scores.get(id(x), 0), _comparable_cad_price(x)))
                     else:
                         filtered = products
                         optional_scores = {id(p): 0 for p in products}
@@ -1543,6 +1629,7 @@ with tab_search_ca:
                             'cross_border': p.get('cross_border'),
                             'ships_to_canada': p.get('ships_to_canada'),
                             'trust': p.get('trust', 'unknown'),
+                            'est_cad': _comparable_cad_price(p),
                         }
                         if saving > 0:
                             dpct = (saving / (p['price'] + saving)) * 100 if (p['price'] + saving) > 0 else 0
@@ -1588,7 +1675,7 @@ with tab_search_ca:
                     # Price display — cross-border vs local
                     if is_us and deal.get('cross_border'):
                         cb = deal['cross_border']
-                        st.markdown(f"💰 **${deal['price']:,.2f} USD** (~${cb['cad_price']:,.0f} CAD)")
+                        st.markdown(f"💰 **\\${deal['price']:,.2f} USD** (~\\${cb['cad_price']:,.0f} CAD)")
                         st.caption(f"Est. shipped: ${cb['cad_total_low']:,.0f}-${cb['cad_total_high']:,.0f} CAD")
                         ship_status = deal.get('ships_to_canada', 'Unknown')
                         ship_icon = {'Likely': '🟢', 'Unlikely': '🔴', 'Unknown': '🟡'}.get(ship_status, '⚪')
@@ -1653,7 +1740,7 @@ with tab_search_ca:
                     # Cross-border info
                     if is_us and deal.get('cross_border'):
                         cb = deal['cross_border']
-                        st.markdown(f"**Price:** ${deal['price']:,.2f} USD (~${cb['cad_price']:,.2f} CAD @ {cb['exchange_rate']:.4f})")
+                        st.markdown(f"**Price:** \\${deal['price']:,.2f} USD (~\\${cb['cad_price']:,.2f} CAD @ {cb['exchange_rate']:.4f})")
                         st.markdown(f"**Est. shipping:** ${cb['shipping_usd_low']}-${cb['shipping_usd_high']} USD")
                         st.markdown(f"**Est. CAD total:** ${cb['cad_total_low']:,.2f} - ${cb['cad_total_high']:,.2f}")
                         ship_status = deal.get('ships_to_canada', 'Unknown')
@@ -1977,8 +2064,20 @@ with tab_mysystem:
                     _set_recommended_filters("us", rec_specs, detected)
                     st.rerun()
 
-            st.caption(f"Will set: {rec_specs.get('ram', '?')}GB RAM, Gen {rec_specs.get('cpu_gen', '?')}+ CPU, "
-                      f"{rec_specs.get('gpu', 'Any')} GPU, {rec_specs.get('storage', '?')}GB+ storage")
+            # Preview merged values (same logic as _set_recommended_filters)
+            preview_ram = max(rec_specs.get('ram', 16), detected.get('ram_gb', 0))
+            preview_cpu = max(rec_specs.get('cpu_gen', 12), detected.get('cpu_gen', 0))
+            preview_gpu = rec_specs.get('gpu', 'Any')
+            rec_tier = _gpu_tier(preview_gpu)
+            cur_tier = _gpu_tier(detected.get('gpu', ''))
+            if rec_tier < cur_tier:
+                tier_to_gpu = {3: 'RTX 4050', 4: 'RTX 4060', 5: 'RTX 4060', 6: 'RTX 4070', 7: 'RTX 4080', 8: 'RTX 4090'}
+                preview_gpu = tier_to_gpu.get(cur_tier + 1, 'Any')
+            cur_storage = sum(d.get('size_gb', 0) for d in detected.get('storage', []))
+            preview_storage = max(rec_specs.get('storage', 512), cur_storage)
+            storage_str = f"{preview_storage}GB" if preview_storage < 1024 else f"{preview_storage / 1024:.0f}TB"
+            st.caption(f"Will set: {preview_ram}GB RAM, Gen {preview_cpu}+ CPU, "
+                      f"{preview_gpu} GPU, {storage_str}+ storage")
 
     else:
         st.info("Click **Detect My Specs** to read your current system hardware. This runs locally — no data is sent anywhere.")
