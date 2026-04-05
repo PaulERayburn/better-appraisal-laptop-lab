@@ -77,6 +77,11 @@ class Database:
                     min_storage_gb  INTEGER,
                     min_cpu_gen     INTEGER,
                     ram_type        TEXT,
+                    form_factor     TEXT,
+                    kit_config      TEXT,
+                    min_speed_mhz   INTEGER,
+                    max_cas_latency INTEGER,
+                    brand           TEXT,
                     price_drop_pct  REAL,
                     price_drop_abs  REAL,
                     is_active       INTEGER DEFAULT 1,
@@ -100,6 +105,19 @@ class Database:
                     value           TEXT NOT NULL
                 );
             """)
+            conn.commit()
+
+            # Migrate existing databases — add new columns if missing
+            for col in ['form_factor', 'kit_config', 'brand']:
+                try:
+                    conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} TEXT")
+                except Exception:
+                    pass
+            for col in ['min_speed_mhz', 'max_cas_latency']:
+                try:
+                    conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} INTEGER")
+                except Exception:
+                    pass
             conn.commit()
 
             # Seed default settings
@@ -313,14 +331,18 @@ class Database:
                 INSERT INTO alerts (
                     name, category, retailer, keyword, max_price,
                     min_ram_gb, min_storage_gb, min_cpu_gen, ram_type,
+                    form_factor, kit_config, min_speed_mhz, max_cas_latency, brand,
                     price_drop_pct, price_drop_abs, cooldown_hours, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 alert_dict['name'], alert_dict['category'],
                 alert_dict.get('retailer'), alert_dict.get('keyword'),
                 alert_dict.get('max_price'),
                 alert_dict.get('min_ram_gb'), alert_dict.get('min_storage_gb'),
                 alert_dict.get('min_cpu_gen'), alert_dict.get('ram_type'),
+                alert_dict.get('form_factor'), alert_dict.get('kit_config'),
+                alert_dict.get('min_speed_mhz'), alert_dict.get('max_cas_latency'),
+                alert_dict.get('brand'),
                 alert_dict.get('price_drop_pct'), alert_dict.get('price_drop_abs'),
                 alert_dict.get('cooldown_hours', 24), now
             ))

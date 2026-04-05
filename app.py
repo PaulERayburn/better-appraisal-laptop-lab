@@ -479,6 +479,65 @@ def build_ram_query_from_filters(base_query, ram_filters):
     return " ".join(query_parts)
 
 
+def _build_alert_from_ram_filters(ram_filters, search_query=''):
+    """Build an alert dict from the current RAM filter panel values."""
+    cap_val, cap_mode = ram_filters.get('capacity', (0, 'Off'))
+    type_val, type_mode = ram_filters.get('ddr_type', ('Any', 'Off'))
+    brand_val, brand_mode = ram_filters.get('brand', ('Any', 'Off'))
+    speed_val, speed_mode = ram_filters.get('min_speed', (0, 'Off'))
+    price_val, price_mode = ram_filters.get('max_price', (0, 'Off'))
+    form_val, form_mode = ram_filters.get('form_factor', ('Any', 'Off'))
+    kit_val, kit_mode = ram_filters.get('kit_config', ('Any', 'Off'))
+    cl_val, cl_mode = ram_filters.get('max_cl', (0, 'Off'))
+
+    # Build a descriptive name from active filters
+    name_parts = []
+    if brand_val != 'Any' and brand_mode != 'Off':
+        name_parts.append(brand_val)
+    if cap_val > 0 and cap_mode != 'Off':
+        name_parts.append(f"{cap_val}GB")
+    if type_val != 'Any' and type_mode != 'Off':
+        name_parts.append(type_val)
+    if form_val != 'Any' and form_mode != 'Off':
+        ff = 'SO-DIMM' if 'SO-DIMM' in form_val else 'DIMM'
+        name_parts.append(ff)
+    if speed_val > 0 and speed_mode != 'Off':
+        name_parts.append(f"{speed_val}MHz")
+    if price_val > 0 and price_mode != 'Off':
+        name_parts.append(f"under ${price_val:.0f}")
+    name = " ".join(name_parts) if name_parts else f"RAM: {search_query[:30]}"
+
+    # Map form factor display value to stored value
+    form_factor = None
+    if form_val != 'Any' and form_mode != 'Off':
+        form_factor = 'SO-DIMM' if 'SO-DIMM' in form_val else 'DIMM'
+
+    # Map kit config display value to stored value
+    kit_config = None
+    if kit_val != 'Any' and kit_mode != 'Off':
+        if 'Single' in kit_val:
+            kit_config = '1x'
+        elif '2-Stick' in kit_val:
+            kit_config = '2x'
+        elif '4-Stick' in kit_val:
+            kit_config = '4x'
+
+    return {
+        'name': name,
+        'category': 'ram',
+        'keyword': search_query.strip() if search_query.strip().lower() not in ('ram', 'memory', '') else None,
+        'max_price': price_val if price_val > 0 and price_mode != 'Off' else None,
+        'min_ram_gb': cap_val if cap_val > 0 and cap_mode != 'Off' else None,
+        'ram_type': type_val if type_val != 'Any' and type_mode != 'Off' else None,
+        'form_factor': form_factor,
+        'kit_config': kit_config,
+        'min_speed_mhz': speed_val if speed_val > 0 and speed_mode != 'Off' else None,
+        'max_cas_latency': cl_val if cl_val > 0 and cl_mode != 'Off' else None,
+        'brand': brand_val if brand_val != 'Any' and brand_mode != 'Off' else None,
+        'cooldown_hours': 24,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════
 # Product deduplication
 # ══════════════════════════════════════════════════════════════════
@@ -973,6 +1032,28 @@ with tab_search_ca:
                         save_deal_to_db(deal)
                         st.success("Saved!")
 
+            # Create alert from current search
+            st.markdown("---")
+            if is_ram_search and ram_filters:
+                if st.button("🔔 Create Alert from This Search", key="ca_alert_from_search"):
+                    alert_dict = _build_alert_from_ram_filters(ram_filters, search_query)
+                    aid = db.create_alert(alert_dict)
+                    st.success(f"Alert '{alert_dict['name']}' created! Go to the Alerts tab to manage it.")
+            else:
+                if st.button("🔔 Create Alert from This Search", key="ca_alert_from_search_gen"):
+                    alert_dict = {
+                        'name': f"Search: {search_query[:40]}",
+                        'category': search_category if search_category != 'auto-detect' else 'other',
+                        'keyword': search_query,
+                        'max_price': None,
+                        'min_ram_gb': min_ram if not is_ram_search else None,
+                        'min_storage_gb': min_storage if not is_ram_search else None,
+                        'min_cpu_gen': min_cpu if not is_ram_search else None,
+                        'cooldown_hours': 24,
+                    }
+                    db.create_alert(alert_dict)
+                    st.success(f"Alert '{alert_dict['name']}' created! Go to the Alerts tab to manage it.")
+
             # All results
             st.markdown("---")
             st.header(f"📊 All Results ({len(search_deals)})")
@@ -1176,6 +1257,24 @@ with tab_search_us:
                     if st.button(f"💾 Track", key=f"save_us_{i}"):
                         save_deal_to_db(deal)
                         st.success("Saved!")
+
+            # Create alert from US search
+            st.markdown("---")
+            if us_is_ram and us_ram_filters:
+                if st.button("🔔 Create Alert from This Search", key="us_alert_from_search"):
+                    alert_dict = _build_alert_from_ram_filters(us_ram_filters, us_query)
+                    db.create_alert(alert_dict)
+                    st.success(f"Alert '{alert_dict['name']}' created! Go to the Alerts tab to manage it.")
+            else:
+                if st.button("🔔 Create Alert from This Search", key="us_alert_from_search_gen"):
+                    alert_dict = {
+                        'name': f"US: {us_query[:40]}",
+                        'category': us_category if us_category != 'auto-detect' else 'other',
+                        'keyword': us_query,
+                        'cooldown_hours': 24,
+                    }
+                    db.create_alert(alert_dict)
+                    st.success(f"Alert '{alert_dict['name']}' created! Go to the Alerts tab to manage it.")
 
             st.markdown("---")
             st.header(f"📊 All US Results ({len(us_deals)})")
@@ -1532,6 +1631,17 @@ with tab_alerts:
                         st.markdown(f"**Min CPU Gen:** {alert['min_cpu_gen']}")
                     if alert.get('ram_type'):
                         st.markdown(f"**RAM Type:** {alert['ram_type']}")
+                    if alert.get('form_factor'):
+                        st.markdown(f"**Form Factor:** {alert['form_factor']}")
+                    if alert.get('kit_config'):
+                        kit_labels = {'1x': 'Single Stick', '2x': '2-Stick Kit', '4x': '4-Stick Kit'}
+                        st.markdown(f"**Kit Config:** {kit_labels.get(alert['kit_config'], alert['kit_config'])}")
+                    if alert.get('min_speed_mhz'):
+                        st.markdown(f"**Min Speed:** {alert['min_speed_mhz']}MHz")
+                    if alert.get('max_cas_latency'):
+                        st.markdown(f"**Max CAS Latency:** CL{alert['max_cas_latency']}")
+                    if alert.get('brand'):
+                        st.markdown(f"**Brand:** {alert['brand']}")
                     if alert.get('price_drop_pct'):
                         st.markdown(f"**Price drop trigger:** {alert['price_drop_pct']}%")
                     if alert.get('price_drop_abs'):
@@ -1547,6 +1657,30 @@ with tab_alerts:
                     if st.button("🗑️ Delete", key=f"del_alert_{alert['id']}"):
                         db.delete_alert(alert['id'])
                         st.rerun()
+
+    # Check Now button
+    st.markdown("---")
+    st.subheader("🔄 Run Alert Check")
+    col_check, col_dry = st.columns([1, 1])
+    with col_check:
+        if st.button("🔍 Check Now (send emails)", type="primary", key="check_now"):
+            with st.spinner("Running all active alerts..."):
+                try:
+                    from deal_checker import run_check
+                    run_check(dry_run=False, verbose=True)
+                    st.success("Check complete! See results below.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Check failed: {e}")
+    with col_dry:
+        if st.button("🧪 Dry Run (no emails)", key="check_dry"):
+            with st.spinner("Running dry check..."):
+                try:
+                    from deal_checker import run_check
+                    run_check(dry_run=True, verbose=True)
+                    st.success("Dry run complete! Check the log at data/checker.log")
+                except Exception as e:
+                    st.error(f"Check failed: {e}")
 
     # Recent notifications
     st.markdown("---")
