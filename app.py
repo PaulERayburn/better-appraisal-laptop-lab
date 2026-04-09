@@ -22,7 +22,7 @@ from scrapers import identify_retailer
 
 # Page config
 st.set_page_config(
-    page_title="Canada Tech Deal Tracker",
+    page_title="Tech Deal Tracker",
     page_icon="💻",
     layout="wide"
 )
